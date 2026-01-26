@@ -105,6 +105,54 @@ Build "Argus Core - Multi-Modal Deepfake Detection & Forensic Analysis Platform"
 
 ## Prioritized Backlog
 
+
+# Argus Core - Project Documentation
+
+## Overview
+Multi-Modal Deepfake Detection & Forensic Analysis Platform
+
+## Repository
+- **Source**: https://github.com/vishnuas22/Argus_Core.git
+- **Branch**: main
+
+## Architecture
+- **Backend**: FastAPI (Python)
+- **Database**: MongoDB
+- **Storage**: MinIO (optional - disabled for current env)
+- **Cache**: Redis (optional - disabled for current env)
+
+## What's Been Implemented
+- [2026-01-26] Full repo replacement from GitHub
+- [2026-01-26] Dependencies installed (100+ Python packages)
+- [2026-01-26] Backend service running on port 8001
+- [2026-01-26] Modified startup to make MinIO/Redis optional
+
+## Available Endpoints
+- `GET /` - API info
+- `GET /health` - Health check
+- `GET /docs` - Swagger UI
+- `GET /redoc` - ReDoc documentation
+- `GET /metrics` - Prometheus metrics
+
+## Services Running
+| Service | Port | Status |
+|---------|------|--------|
+| Backend (FastAPI) | 8001 | ✅ Running |
+| MongoDB | 27017 | ✅ Running |
+| Redis | 6379 | ✅ Running |
+| MinIO | 9000 (API), 9001 (Console) | ✅ Running |
+
+## MinIO Buckets Created
+- `argus-uploads` - File uploads
+- `argus-preprocessed` - Preprocessed media
+- `argus-results` - Analysis results
+
+## Redis
+- Pub/Sub for WebSocket cross-worker messaging
+- Celery broker/backend ready
+
+
+
 ### P0 (MVP - Critical)
 - [x] Backend architecture scaffolding
 - [ ] **React frontend with file upload** ← NEXT
