@@ -1,0 +1,741 @@
+"""
+Argus Core - API Router
+=======================
+HTTP endpoints for the deepfake detection platform.
+
+Implements: PRIME_ARGUS_DOCUMENT.md - Section 2.2 - api/router.py
+
+Role: Define all HTTP endpoints. Route requests to appropriate handlers.
+Handle request validation and response serialization.
+
+Integration:
+- Imports: api/deps.py, schemas/schemas.py, core/orchestrator.py
+- Inputs: AnalyzeRequest, UploadFile
+- Outputs: AnalysisResponse, AnalysisStatusResponse
+
+Why this approach: Dependency injection enables testing and modularity.
+Async handlers prevent blocking during I/O operations.
+
+Endpoints:
+- POST /api/v1/analyze - Upload and analyze media
+- GET /api/v1/analyze/{analysis_id} - Get analysis status/result
+- GET /api/v1/analyze/{analysis_id}/detail - Get detailed results
+- DELETE /api/v1/analyze/{analysis_id} - Delete analysis
+- POST /api/v1/analyze/text - Analyze text for AI generation
+- GET /api/v1/health - Health check
+- GET /api/v1/models - List available models
+"""
+
+import uuid
+from typing import Optional, List
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Path, HTTPException, status, BackgroundTasks
+from fastapi.responses import JSONResponse
+
+from config import config
+from schemas.schemas import (
+    AnalysisDocument, AnalysisStatus, AnalysisResponse, AnalysisDetailResponse,
+    AnalyzeOptions, FileInput, Modality, TrustScore, Verdict, Explanation,
+    ProgressUpdate, ErrorResponse
+)
+from storage.storage import StorageClient
+from storage.db import DatabaseClient
+from processing.sanitize import InputSanitizer, SanitizedFile
+from api.deps import (
+    get_db, get_storage, get_sanitizer_standard, get_sanitizer_aggressive,
+    get_orchestrator, get_correlation_id, get_current_user_optional,
+    get_analysis_deps, AnalysisDependencies, check_rate_limit
+)
+from utils.logging import get_logger
+from utils.errors import AnalysisNotFoundError, InvalidFileError, ValidationError
+
+logger = get_logger(__name__)
+
+# Create router with prefix and tags
+router = APIRouter(prefix="/api/v1", tags=["analysis"])
+
+
+# ============== ANALYSIS ENDPOINTS ==============
+
+@router.post(
+    "/analyze",
+    response_model=AnalysisResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Upload and analyze media",
+    description="""
+    Upload a media file for deepfake analysis.
+    
+    Supported formats:
+    - Images: JPEG, PNG, WebP
+    - Videos: MP4, WebM, MOV, AVI
+    - Audio: MP3, WAV, OGG
+    - Text: Plain text (use /analyze/text endpoint instead)
+    
+    The analysis runs asynchronously. Use the returned analysis_id
+    to poll for results via GET /analyze/{analysis_id}.
+    
+    Maximum file size: 500MB
+    Maximum video duration: 5 minutes
+    """,
+    responses={
+        202: {"description": "Analysis started"},
+        400: {"model": ErrorResponse, "description": "Invalid file"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
+        500: {"model": ErrorResponse, "description": "Internal error"}
+    }
+)
+async def analyze_media(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(..., description="Media file to analyze"),
+    generate_report: bool = Form(default=True, description="Generate PDF report"),
+    generate_heatmaps: bool = Form(default=True, description="Generate GradCAM heatmaps"),
+    defense_level: str = Form(default="standard", description="Adversarial defense level: none, standard, aggressive"),
+    modalities: Optional[str] = Form(default=None, description="Comma-separated modalities to analyze (auto-detect if empty)"),
+    deps: AnalysisDependencies = Depends(get_analysis_deps),
+    user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """
+    Upload and analyze media for deepfake detection.
+    
+    Returns immediately with analysis_id. Actual analysis runs in background.
+    """
+    # Generate analysis ID
+    analysis_id = str(uuid.uuid4())
+    
+    logger.info(
+        f"Analysis request received",
+        extra={
+            "analysis_id": analysis_id,
+            "filename": file.filename,
+            "content_type": file.content_type,
+            "correlation_id": deps.correlation_id
+        }
+    )
+    
+    try:
+        # Read file content
+        file_content = await file.read()
+        
+        # Validate and sanitize file
+        sanitizer = InputSanitizer(defense_level=defense_level)
+        sanitized = await sanitizer.validate(
+            file_content=file_content,
+            filename=file.filename or "unnamed",
+            content_type=file.content_type
+        )
+        
+        # Parse modalities if provided
+        parsed_modalities = None
+        if modalities:
+            parsed_modalities = [
+                Modality(m.strip().lower()) 
+                for m in modalities.split(",") 
+                if m.strip()
+            ]
+        
+        # Create analysis options
+        options = AnalyzeOptions(
+            modalities=parsed_modalities,
+            generate_report=generate_report,
+            generate_heatmaps=generate_heatmaps,
+            defense_level=defense_level
+        )
+        
+        # Upload file to storage
+        file_key = f"uploads/{analysis_id}/{sanitized.original_filename}"
+        await deps.storage.ensure_default_buckets()
+        await deps.storage.upload_file(
+            file=sanitized.content,
+            bucket=deps.storage.bucket_uploads,
+            object_key=file_key,
+            content_type=sanitized.mime_type
+        )
+        
+        # Create file input record
+        file_input = FileInput(
+            file_id=file_key,
+            file_type=sanitized.file_type.value,
+            original_filename=sanitized.original_filename,
+            file_hash=sanitized.file_hash,
+            file_size=sanitized.file_size,
+            duration_seconds=sanitized.duration_seconds
+        )
+        
+        # Create analysis document
+        analysis = AnalysisDocument(
+            analysis_id=analysis_id,
+            status=AnalysisStatus.PENDING,
+            created_at=datetime.now(timezone.utc),
+            input=file_input,
+            options=options
+        )
+        
+        # Insert into database
+        await deps.db.insert_analysis(analysis)
+        
+        # Queue analysis job
+        try:
+            orchestrator = await get_orchestrator()
+            await orchestrator.enqueue_analysis(
+                analysis_id=analysis_id,
+                options=options.model_dump()
+            )
+        except Exception as e:
+            logger.warning(f"Failed to enqueue job, will process synchronously: {e}")
+            # If orchestrator unavailable, update status for manual processing
+            await deps.db.update_analysis_status(
+                analysis_id, 
+                AnalysisStatus.PENDING,
+                error_message="Queued for processing"
+            )
+        
+        # Log audit event
+        await deps.db.log_audit_event(
+            event_type="analysis_created",
+            resource_id=analysis_id,
+            actor=user.get("user_id", "anonymous") if user else "anonymous",
+            metadata={
+                "filename": sanitized.original_filename,
+                "file_hash": sanitized.file_hash,
+                "file_size": sanitized.file_size
+            }
+        )
+        
+        logger.info(f"Analysis created: {analysis_id}")
+        
+        return AnalysisResponse(
+            analysis_id=analysis_id,
+            status=AnalysisStatus.PENDING,
+            created_at=analysis.created_at
+        )
+        
+    except InvalidFileError as e:
+        logger.warning(f"Invalid file upload: {e.message}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=e.to_dict()
+        )
+    except Exception as e:
+        logger.error(f"Analysis creation failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error_code": "ANALYSIS_CREATION_FAILED",
+                "message": str(e)
+            }
+        )
+
+
+@router.get(
+    "/analyze/{analysis_id}",
+    response_model=AnalysisResponse,
+    summary="Get analysis status and results",
+    description="""
+    Get the current status and results of an analysis.
+    
+    Poll this endpoint to check analysis progress.
+    Once status is 'completed', results will be included.
+    """,
+    responses={
+        200: {"description": "Analysis found"},
+        404: {"model": ErrorResponse, "description": "Analysis not found"}
+    }
+)
+async def get_analysis(
+    analysis_id: str = Path(..., description="Analysis ID"),
+    db: DatabaseClient = Depends(get_db)
+):
+    """Get analysis status and basic results."""
+    analysis = await db.get_analysis(analysis_id)
+    
+    if analysis is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error_code": "ANALYSIS_NOT_FOUND",
+                "message": f"Analysis not found: {analysis_id}",
+                "details": {"analysis_id": analysis_id}
+            }
+        )
+    
+    return AnalysisResponse(
+        analysis_id=analysis.analysis_id,
+        status=analysis.status,
+        trust_score=analysis.trust_score,
+        verdict=analysis.verdict,
+        explanation=analysis.explanation,
+        report_url=analysis.report_url,
+        created_at=analysis.created_at,
+        completed_at=analysis.completed_at
+    )
+
+
+@router.get(
+    "/analyze/{analysis_id}/detail",
+    response_model=AnalysisDetailResponse,
+    summary="Get detailed analysis results",
+    description="""
+    Get full detailed results including per-modality scores.
+    
+    Only available after analysis is completed.
+    """,
+    responses={
+        200: {"description": "Detailed results"},
+        404: {"model": ErrorResponse, "description": "Analysis not found"},
+        400: {"model": ErrorResponse, "description": "Analysis not complete"}
+    }
+)
+async def get_analysis_detail(
+    analysis_id: str = Path(..., description="Analysis ID"),
+    db: DatabaseClient = Depends(get_db)
+):
+    """Get detailed analysis results with all modality data."""
+    analysis = await db.get_analysis(analysis_id)
+    
+    if analysis is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error_code": "ANALYSIS_NOT_FOUND",
+                "message": f"Analysis not found: {analysis_id}"
+            }
+        )
+    
+    if analysis.status != AnalysisStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error_code": "ANALYSIS_NOT_COMPLETE",
+                "message": f"Analysis is still {analysis.status.value}",
+                "details": {"current_status": analysis.status.value}
+            }
+        )
+    
+    return AnalysisDetailResponse(
+        analysis_id=analysis.analysis_id,
+        status=analysis.status,
+        trust_score=analysis.trust_score,
+        verdict=analysis.verdict,
+        explanation=analysis.explanation,
+        report_url=analysis.report_url,
+        created_at=analysis.created_at,
+        completed_at=analysis.completed_at,
+        video_result=analysis.video_result,
+        audio_result=analysis.audio_result,
+        text_result=analysis.text_result,
+        metadata_result=analysis.metadata_result,
+        processing_time_seconds=analysis.processing_time_seconds
+    )
+
+
+@router.delete(
+    "/analyze/{analysis_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete analysis",
+    description="Delete an analysis and all associated data.",
+    responses={
+        204: {"description": "Analysis deleted"},
+        404: {"model": ErrorResponse, "description": "Analysis not found"}
+    }
+)
+async def delete_analysis(
+    analysis_id: str = Path(..., description="Analysis ID"),
+    db: DatabaseClient = Depends(get_db),
+    storage: StorageClient = Depends(get_storage),
+    user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Delete analysis and associated files."""
+    # Check if analysis exists
+    analysis = await db.get_analysis(analysis_id)
+    
+    if analysis is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error_code": "ANALYSIS_NOT_FOUND",
+                "message": f"Analysis not found: {analysis_id}"
+            }
+        )
+    
+    # Delete from database
+    await db.delete_analysis(analysis_id)
+    
+    # Delete associated files from storage
+    try:
+        # Delete uploaded file
+        if analysis.input:
+            await storage.delete_file(
+                storage.bucket_uploads,
+                analysis.input.file_id
+            )
+        
+        # Delete preprocessed data
+        prefix = f"preprocessed/{analysis_id}/"
+        objects = await storage.list_objects(storage.bucket_preprocessed, prefix)
+        for obj in objects:
+            await storage.delete_file(storage.bucket_preprocessed, obj)
+        
+        # Delete results (heatmaps, reports)
+        prefix = f"results/{analysis_id}/"
+        objects = await storage.list_objects(storage.bucket_results, prefix)
+        for obj in objects:
+            await storage.delete_file(storage.bucket_results, obj)
+            
+    except Exception as e:
+        logger.warning(f"Failed to delete some files for {analysis_id}: {e}")
+    
+    # Log audit event
+    await db.log_audit_event(
+        event_type="analysis_deleted",
+        resource_id=analysis_id,
+        actor=user.get("user_id", "anonymous") if user else "anonymous"
+    )
+    
+    logger.info(f"Analysis deleted: {analysis_id}")
+    
+    return None
+
+
+@router.get(
+    "/analyze",
+    response_model=List[AnalysisResponse],
+    summary="List analyses",
+    description="List analyses with optional filtering.",
+    responses={
+        200: {"description": "List of analyses"}
+    }
+)
+async def list_analyses(
+    status_filter: Optional[AnalysisStatus] = Query(
+        default=None, 
+        alias="status",
+        description="Filter by status"
+    ),
+    limit: int = Query(default=20, ge=1, le=100, description="Maximum results"),
+    offset: int = Query(default=0, ge=0, description="Skip count for pagination"),
+    db: DatabaseClient = Depends(get_db)
+):
+    """List analyses with optional status filter."""
+    analyses = await db.list_analyses(
+        status=status_filter,
+        limit=limit,
+        offset=offset
+    )
+    
+    return analyses
+
+
+# ============== TEXT ANALYSIS ENDPOINT ==============
+
+@router.post(
+    "/analyze/text",
+    response_model=AnalysisResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Analyze text for AI generation",
+    description="""
+    Analyze text content for AI-generated text detection.
+    
+    Uses RADAR model with perplexity/burstiness analysis.
+    
+    Minimum text length: 50 characters
+    Maximum text length: 100,000 characters
+    """,
+    responses={
+        202: {"description": "Analysis started"},
+        400: {"model": ErrorResponse, "description": "Invalid text"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"}
+    }
+)
+async def analyze_text(
+    text: str = Form(..., min_length=50, max_length=100000, description="Text content to analyze"),
+    generate_report: bool = Form(default=False, description="Generate PDF report"),
+    deps: AnalysisDependencies = Depends(get_analysis_deps),
+    user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """Analyze text for AI-generated content detection."""
+    analysis_id = str(uuid.uuid4())
+    
+    logger.info(
+        f"Text analysis request received",
+        extra={
+            "analysis_id": analysis_id,
+            "text_length": len(text),
+            "correlation_id": deps.correlation_id
+        }
+    )
+    
+    try:
+        # Validate text
+        text = deps.sanitizer.validate_text(text)
+        
+        # Create options
+        options = AnalyzeOptions(
+            modalities=[Modality.TEXT],
+            generate_report=generate_report,
+            generate_heatmaps=False
+        )
+        
+        # Create file input for text
+        import hashlib
+        text_hash = hashlib.sha256(text.encode()).hexdigest()
+        
+        file_input = FileInput(
+            file_id=f"text/{analysis_id}",
+            file_type="text/plain",
+            original_filename="text_input.txt",
+            file_hash=text_hash,
+            file_size=len(text.encode())
+        )
+        
+        # Create analysis document
+        analysis = AnalysisDocument(
+            analysis_id=analysis_id,
+            status=AnalysisStatus.PENDING,
+            created_at=datetime.now(timezone.utc),
+            input=file_input,
+            options=options
+        )
+        
+        # Insert into database
+        await deps.db.insert_analysis(analysis)
+        
+        # Store text content for processing
+        await deps.storage.ensure_default_buckets()
+        await deps.storage.upload_file(
+            file=text.encode(),
+            bucket=deps.storage.bucket_uploads,
+            object_key=f"uploads/{analysis_id}/text_input.txt",
+            content_type="text/plain"
+        )
+        
+        # Queue analysis job
+        try:
+            orchestrator = await get_orchestrator()
+            await orchestrator.enqueue_analysis(
+                analysis_id=analysis_id,
+                options=options.model_dump()
+            )
+        except Exception as e:
+            logger.warning(f"Failed to enqueue text analysis: {e}")
+        
+        logger.info(f"Text analysis created: {analysis_id}")
+        
+        return AnalysisResponse(
+            analysis_id=analysis_id,
+            status=AnalysisStatus.PENDING,
+            created_at=analysis.created_at
+        )
+        
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=e.to_dict()
+        )
+
+
+# ============== UTILITY ENDPOINTS ==============
+
+@router.get(
+    "/health",
+    summary="Health check",
+    description="Check if the API is running and healthy.",
+    tags=["system"]
+)
+async def health_check(
+    db: DatabaseClient = Depends(get_db),
+    storage: StorageClient = Depends(get_storage)
+):
+    """Health check endpoint for load balancers."""
+    health = {
+        "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "version": config.api_version,
+        "components": {}
+    }
+    
+    # Check database
+    try:
+        await db.db.command("ping")
+        health["components"]["database"] = "healthy"
+    except Exception as e:
+        health["components"]["database"] = f"unhealthy: {str(e)}"
+        health["status"] = "degraded"
+    
+    # Check storage
+    try:
+        exists = await storage._run_sync(
+            storage._client.bucket_exists,
+            storage.bucket_uploads
+        )
+        health["components"]["storage"] = "healthy" if exists else "bucket_missing"
+    except Exception as e:
+        health["components"]["storage"] = f"unhealthy: {str(e)}"
+        health["status"] = "degraded"
+    
+    return health
+
+
+@router.get(
+    "/models",
+    summary="List available models",
+    description="Get list of available detection models and their status.",
+    tags=["system"]
+)
+async def list_models():
+    """List available detection models."""
+    from models.registry import get_model_registry
+    
+    registry = get_model_registry()
+    models = []
+    
+    for name in registry.list_available():
+        try:
+            metadata = registry.get_model_metadata(name)
+            models.append({
+                "name": name,
+                "category": metadata.category.value,
+                "vram_mb": metadata.vram_mb,
+                "loaded": False,  # TODO: Check loaded status from manager
+                "version": metadata.version
+            })
+        except Exception:
+            pass
+    
+    return {"models": models, "count": len(models)}
+
+
+@router.get(
+    "/stats",
+    summary="Get analysis statistics",
+    description="Get aggregate statistics about analyses.",
+    tags=["system"]
+)
+async def get_stats(
+    db: DatabaseClient = Depends(get_db)
+):
+    """Get analysis statistics."""
+    # Count by status
+    stats = {
+        "total": 0,
+        "by_status": {},
+        "by_verdict": {}
+    }
+    
+    for status_val in AnalysisStatus:
+        analyses = await db.list_analyses(status=status_val, limit=0)
+        count = len(analyses)
+        stats["by_status"][status_val.value] = count
+        stats["total"] += count
+    
+    return stats
+
+
+# ============== REPORT ENDPOINTS ==============
+
+@router.get(
+    "/analyze/{analysis_id}/report",
+    summary="Get analysis report",
+    description="Get or generate PDF report for analysis.",
+    responses={
+        200: {"description": "Report URL"},
+        404: {"model": ErrorResponse, "description": "Analysis not found"},
+        400: {"model": ErrorResponse, "description": "Analysis not complete"}
+    }
+)
+async def get_report(
+    analysis_id: str = Path(..., description="Analysis ID"),
+    regenerate: bool = Query(default=False, description="Force regenerate report"),
+    db: DatabaseClient = Depends(get_db),
+    storage: StorageClient = Depends(get_storage)
+):
+    """Get or generate PDF forensic report."""
+    analysis = await db.get_analysis(analysis_id)
+    
+    if analysis is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "ANALYSIS_NOT_FOUND", "message": f"Analysis not found: {analysis_id}"}
+        )
+    
+    if analysis.status != AnalysisStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error_code": "ANALYSIS_NOT_COMPLETE", "message": "Analysis must be complete to generate report"}
+        )
+    
+    # Check if report exists
+    if analysis.report_url and not regenerate:
+        return {"report_url": analysis.report_url}
+    
+    # Generate report (placeholder - actual implementation in forensics module)
+    report_key = f"results/{analysis_id}/report.pdf"
+    
+    try:
+        # Generate presigned URL for download
+        report_url = await storage.get_presigned_url(
+            storage.bucket_results,
+            report_key,
+            expires_seconds=3600
+        )
+        
+        return {"report_url": report_url}
+        
+    except Exception as e:
+        logger.warning(f"Report not available: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "REPORT_NOT_FOUND", "message": "Report has not been generated yet"}
+        )
+
+
+@router.get(
+    "/analyze/{analysis_id}/heatmaps",
+    summary="Get analysis heatmaps",
+    description="Get GradCAM heatmap URLs for analysis.",
+    responses={
+        200: {"description": "Heatmap URLs"},
+        404: {"model": ErrorResponse, "description": "Analysis not found"}
+    }
+)
+async def get_heatmaps(
+    analysis_id: str = Path(..., description="Analysis ID"),
+    db: DatabaseClient = Depends(get_db),
+    storage: StorageClient = Depends(get_storage)
+):
+    """Get GradCAM heatmap URLs for visualization."""
+    analysis = await db.get_analysis(analysis_id)
+    
+    if analysis is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "ANALYSIS_NOT_FOUND", "message": f"Analysis not found: {analysis_id}"}
+        )
+    
+    # List heatmap files
+    prefix = f"results/{analysis_id}/heatmaps/"
+    
+    try:
+        objects = await storage.list_objects(storage.bucket_results, prefix)
+        
+        heatmaps = []
+        for obj in objects:
+            url = await storage.get_presigned_url(
+                storage.bucket_results,
+                obj,
+                expires_seconds=3600
+            )
+            heatmaps.append({
+                "key": obj,
+                "url": url
+            })
+        
+        return {"heatmaps": heatmaps, "count": len(heatmaps)}
+        
+    except Exception as e:
+        logger.warning(f"Failed to list heatmaps: {e}")
+        return {"heatmaps": [], "count": 0}
+
+
+# Export router
+__all__ = ["router"]
