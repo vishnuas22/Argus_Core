@@ -536,17 +536,26 @@ async def startup_dependencies() -> None:
     logger.info("Initializing dependencies...")
     
     # Connect to database
-    await get_db_client()
-    logger.info("Database connected")
+    try:
+        await get_db_client()
+        logger.info("Database connected")
+    except Exception as e:
+        logger.warning(f"Database connection failed (non-critical): {e}")
     
-    # Initialize storage
-    storage = get_storage_client()
-    await storage.ensure_default_buckets()
-    logger.info("Storage initialized")
+    # Initialize storage (optional - may not be available)
+    try:
+        storage = get_storage_client()
+        await storage.ensure_default_buckets()
+        logger.info("Storage initialized")
+    except Exception as e:
+        logger.warning(f"Storage initialization failed (non-critical): {e}")
     
     # Initialize inference engine (lazy - doesn't load models yet)
-    get_inference_engine()
-    logger.info("Inference engine initialized")
+    try:
+        get_inference_engine()
+        logger.info("Inference engine initialized")
+    except Exception as e:
+        logger.warning(f"Inference engine initialization failed (non-critical): {e}")
     
     logger.info("All dependencies initialized")
 
