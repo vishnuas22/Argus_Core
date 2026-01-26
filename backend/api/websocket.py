@@ -597,8 +597,11 @@ async def send_error_update(
 
 async def startup_websocket():
     """Initialize WebSocket manager on application startup."""
-    await manager.start_redis_listener()
-    logger.info("WebSocket manager initialized")
+    try:
+        await manager.start_redis_listener()
+        logger.info("WebSocket manager initialized")
+    except Exception as e:
+        logger.warning(f"Redis listener failed to start (non-critical): {e}")
 
 
 async def shutdown_websocket():
