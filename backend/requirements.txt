@@ -146,3 +146,4 @@ wcwidth==0.4.0
 websockets==15.0.1
 yarl==1.22.0
 zipp==3.23.0
+reportlab==4.4.9
