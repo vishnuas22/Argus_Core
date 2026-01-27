@@ -165,7 +165,7 @@ export const analysisApi = {
 /**
  * Transform backend snake_case response to frontend camelCase
  */
-function transformAnalysisResponse(data: Record<string, unknown>): AnalysisResponse {
+function transformAnalysisResponse(data: AnalysisResponse | Record<string, unknown>): AnalysisResponse {
   return {
     analysis_id: data.analysis_id as string,
     status: data.status as AnalysisResponse['status'],
@@ -181,7 +181,7 @@ function transformAnalysisResponse(data: Record<string, unknown>): AnalysisRespo
 /**
  * Transform detailed response
  */
-function transformDetailResponse(data: Record<string, unknown>): AnalysisDetailResponse {
+function transformDetailResponse(data: AnalysisDetailResponse | Record<string, unknown>): AnalysisDetailResponse {
   return {
     ...transformAnalysisResponse(data),
     input: data.input as AnalysisDetailResponse['input'],
