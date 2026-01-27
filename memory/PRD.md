@@ -180,6 +180,115 @@ Multi-Modal Deepfake Detection & Forensic Analysis Platform
 - [ ] Load testing
 - [ ] Security hardening
 
+
+| Service | Port | Status |
+|---------|------|--------|
+| Backend API | 8001 | ✅ Running |
+| MongoDB | 27017 | ✅ Running |
+| MinIO API | 9000 | ✅ Running |
+| MinIO Console | 9001 | ✅ Running |
+| Redis | 6379 | ✅ Running |
+
+### Storage Buckets (MinIO)
+- `argus-uploads` - Raw uploaded media files
+- `argus-preprocessed` - Extracted frames, audio tracks
+- `argus-results` - Heatmaps, analysis reports
+
+---
+
+## Implementation Progress
+
+### Phase 1: Infrastructure Setup ✅
+- [x] Repository cloned from GitHub
+- [x] Python dependencies installed
+- [x] MongoDB configured and running
+- [x] MinIO installed and configured (supervisor)
+- [x] Redis installed and configured (supervisor)
+- [x] All default buckets created
+- [x] Backend health checks passing
+
+### Phase 2: Core API (From PRIME_ARGUS_DOCUMENT.md)
+- [x] server.py - FastAPI entry point
+- [x] config.py - Configuration loader
+- [x] api/router.py - API endpoints
+- [x] api/deps.py - Dependency injection
+- [x] api/websocket.py - Real-time updates
+- [x] api/middleware.py - CORS, rate limiting
+- [x] storage/db.py - MongoDB client
+- [x] storage/storage.py - MinIO client
+
+### Phase 3: Analysis Pipeline (Pending)
+- [ ] core/orchestrator.py - Celery task management
+- [ ] core/engine.py - Inference engine
+- [ ] core/fusion.py - Multi-modal fusion
+- [ ] core/scorer.py - Trust scoring
+- [ ] analyzers/* - Modality analyzers
+
+---
+
+## API Endpoints
+
+### Health & System
+- `GET /` - Root info
+- `GET /health` - Basic health
+- `GET /api/v1/health` - Detailed health with component status
+- `GET /metrics` - Prometheus metrics
+
+### Analysis (From router.py)
+- `POST /api/v1/analyze` - Submit media for analysis
+- `GET /api/v1/analyze/{analysis_id}` - Get analysis status/results
+
+### WebSocket
+- `WS /ws/analysis/{analysis_id}` - Real-time progress updates
+- `WS /ws/updates` - Global system updates
+
+---
+
+## Configuration (.env)
+
+```
+# Database
+MONGO_URL=mongodb://localhost:27017
+DB_NAME=argus_core
+
+# Storage (MinIO)
+MINIO_ENDPOINT=localhost:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+
+# Redis
+REDIS_URL=redis://localhost:6379/0
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/1
+```
+
+---
+
+## Backlog
+
+### P0 - Critical
+- [ ] Implement Celery workers for background analysis
+- [ ] Add ML model loading via ModelManager
+
+### P1 - High Priority
+- [ ] Video analyzer implementation
+- [ ] Audio analyzer implementation
+- [ ] Report generation (PDF)
+
+### P2 - Medium Priority
+- [ ] C2PA Content Credentials integration
+- [ ] TensorRT optimization
+- [ ] Audit logging
+
+---
+
+## Notes
+- All services managed via Supervisor for auto-restart
+- Backend has hot-reload enabled for development
+- MinIO credentials are default (change for production)
+
+
+
 ## Next Steps
 1. **Create React Frontend** (PRIORITY)
    - File upload component with drag & drop
