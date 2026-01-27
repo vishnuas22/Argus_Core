@@ -1,3 +1,327 @@
+/**
+ * Argus Core - Global Styles
+ * ==========================
+ * Global CSS including Tailwind directives and CSS custom properties.
+ * 
+ * Implements: PRIME_FRONTEND_DOCUMENT.md - Section 2.1 - globals.css
+ */
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    /* Background colors */
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    
+    /* Card colors */
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    
+    /* Popover colors */
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    
+    /* Primary colors - Argus blue */
+    --primary: 221 83% 53%;
+    --primary-foreground: 210 40% 98%;
+    
+    /* Secondary colors */
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+    
+    /* Muted colors */
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    
+    /* Accent colors */
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    
+    /* Destructive colors */
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    
+    /* Border and input */
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 221 83% 53%;
+    
+    /* Radius */
+    --radius: 0.5rem;
+    
+    /* Verdict colors */
+    --verdict-authentic: 142 76% 36%;
+    --verdict-likely-authentic: 84 81% 44%;
+    --verdict-uncertain: 45 93% 47%;
+    --verdict-likely-fake: 27 96% 61%;
+    --verdict-fake: 0 84% 60%;
+    
+    /* Chart colors */
+    --chart-1: 221 83% 53%;
+    --chart-2: 142 76% 36%;
+    --chart-3: 45 93% 47%;
+    --chart-4: 27 96% 61%;
+    --chart-5: 0 84% 60%;
+  }
+
+  .dark {
+    /* Background colors */
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    
+    /* Card colors */
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    
+    /* Popover colors */
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    
+    /* Primary colors - Argus blue (brighter for dark mode) */
+    --primary: 217 91% 60%;
+    --primary-foreground: 222 47% 11%;
+    
+    /* Secondary colors */
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    
+    /* Muted colors */
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    
+    /* Accent colors */
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    
+    /* Destructive colors */
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    
+    /* Border and input */
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 217 91% 60%;
+    
+    /* Verdict colors (adjusted for dark mode) */
+    --verdict-authentic: 142 71% 45%;
+    --verdict-likely-authentic: 84 85% 50%;
+    --verdict-uncertain: 45 93% 55%;
+    --verdict-likely-fake: 27 96% 55%;
+    --verdict-fake: 0 84% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+  
+  /* Smooth scrolling */
+  html {
+    scroll-behavior: smooth;
+  }
+  
+  /* Focus visible styles */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+  
+  /* Selection styles */
+  ::selection {
+    @apply bg-primary/20 text-foreground;
+  }
+}
+
+@layer utilities {
+  /* Hide scrollbar but keep functionality */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+  
+  /* Custom scrollbar */
+  .scrollbar-custom {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
+  }
+  
+  .scrollbar-custom::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  
+  .scrollbar-custom::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  
+  .scrollbar-custom::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--muted-foreground) / 0.3);
+    border-radius: 4px;
+  }
+  
+  .scrollbar-custom::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.5);
+  }
+  
+  /* Glass morphism effect */
+  .glass {
+    @apply bg-background/80 backdrop-blur-lg;
+  }
+  
+  /* Gradient text */
+  .gradient-text {
+    @apply bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent;
+  }
+  
+  /* Animated gradient border */
+  .gradient-border {
+    position: relative;
+  }
+  
+  .gradient-border::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      to right,
+      hsl(var(--primary)),
+      hsl(var(--primary) / 0.5)
+    );
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+  }
+}
+
+/* Animation keyframes */
+@keyframes pulse-slow {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Animation classes */
+.animate-pulse-slow {
+  animation: pulse-slow 3s ease-in-out infinite;
+}
+
+.animate-spin-slow {
+  animation: spin-slow 8s linear infinite;
+}
+
+.animate-slide-up {
+  animation: slide-up 0.3s ease-out;
+}
+
+.animate-slide-down {
+  animation: slide-down 0.3s ease-out;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+.animate-scale-in {
+  animation: scale-in 0.2s ease-out;
+}
+
+/* D3 chart specific styles */
+.d3-chart {
+  font-family: var(--font-mono);
+}
+
+.d3-chart text {
+  fill: hsl(var(--foreground));
+}
+
+.d3-chart .axis line,
+.d3-chart .axis path {
+  stroke: hsl(var(--border));
+}
+
+.d3-chart .grid line {
+  stroke: hsl(var(--border) / 0.5);
+}
+
+/* Trust score gauge styles */
+.trust-score-gauge .gauge-background {
+  fill: hsl(var(--muted));
+}
+
+.trust-score-gauge .gauge-value {
+  transition: stroke-dasharray 1s ease-out;
+}
+
+.trust-score-gauge .gauge-text {
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
