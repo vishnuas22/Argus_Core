@@ -9,15 +9,22 @@ Buckets:
 - argus-uploads: Raw uploaded files
 - argus-preprocessed: Extracted frames, audio
 - argus-results: Heatmaps, reports
+
+Features:
+- Automatic retry with exponential backoff
+- Health checks with auto-reconnection
+- Guaranteed bucket creation on startup
 """
 
 import io
-from typing import Union, BinaryIO, Optional, AsyncIterator, List
+import time
+from typing import Union, BinaryIO, Optional, AsyncIterator, List, Dict, Any
 from datetime import timedelta
 from minio import Minio
 from minio.error import S3Error
 import asyncio
 from functools import partial
+import urllib3
 
 from config import config
 from interfaces.storage import IStorage
@@ -26,10 +33,15 @@ from utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Retry configuration
+MAX_RETRIES = 3
+RETRY_DELAY_BASE = 1.0
+RETRY_DELAY_MAX = 10.0
+
 
 class StorageClient(IStorage):
     """
-    MinIO object storage client.
+    MinIO object storage client with automatic retry and health checks.
     
     Provides async wrapper around MinIO SDK for
     file upload, download, and management operations.
@@ -56,25 +68,173 @@ class StorageClient(IStorage):
         self.secret_key = secret_key or config.minio_secret_key
         self.secure = secure or config.minio_secure
         
-        self._client = Minio(
-            self.endpoint,
-            access_key=self.access_key,
-            secret_key=self.secret_key,
-            secure=self.secure
-        )
+        self._client: Optional[Minio] = None
+        self._initialized = False
+        self._buckets_created = False
         
         # Default buckets from config
         self.bucket_uploads = config.minio_bucket_uploads
         self.bucket_preprocessed = config.minio_bucket_preprocessed
         self.bucket_results = config.minio_bucket_results
+        
+        # Initialize client
+        self._create_client()
+    
+    def _create_client(self) -> None:
+        """Create MinIO client instance with proper timeout settings."""
+        # Configure HTTP client with timeouts
+        http_client = urllib3.PoolManager(
+            timeout=urllib3.Timeout(connect=5.0, read=30.0),
+            maxsize=10,
+            retries=urllib3.Retry(
+                total=3,
+                backoff_factor=0.2,
+                status_forcelist=[500, 502, 503, 504]
+            )
+        )
+        
+        self._client = Minio(
+            self.endpoint,
+            access_key=self.access_key,
+            secret_key=self.secret_key,
+            secure=self.secure,
+            http_client=http_client
+        )
+        logger.info(f"MinIO client created for endpoint: {self.endpoint}")
+    
+    def _reconnect(self) -> None:
+        """Reconnect to MinIO server."""
+        logger.warning("Reconnecting to MinIO...")
+        self._create_client()
+        self._buckets_created = False
     
     async def _run_sync(self, func, *args, **kwargs):
         """Run synchronous MinIO operation in executor."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None,
             partial(func, *args, **kwargs)
         )
+    
+    async def _retry_operation(
+        self,
+        operation_name: str,
+        func,
+        *args,
+        max_retries: int = MAX_RETRIES,
+        **kwargs
+    ):
+        """
+        Execute operation with retry logic and exponential backoff.
+        
+        Args:
+            operation_name: Name of operation for logging
+            func: Function to execute
+            *args: Function arguments
+            max_retries: Maximum retry attempts
+            **kwargs: Function keyword arguments
+            
+        Returns:
+            Operation result
+            
+        Raises:
+            StorageError: If all retries fail
+        """
+        last_error = None
+        
+        for attempt in range(max_retries + 1):
+            try:
+                return await self._run_sync(func, *args, **kwargs)
+            except S3Error as e:
+                last_error = e
+                if attempt < max_retries:
+                    delay = min(RETRY_DELAY_BASE * (2 ** attempt), RETRY_DELAY_MAX)
+                    logger.warning(
+                        f"{operation_name} failed (attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                        f"Retrying in {delay:.1f}s..."
+                    )
+                    await asyncio.sleep(delay)
+                    
+                    # Reconnect on connection errors
+                    if "Connection" in str(e) or "timeout" in str(e).lower():
+                        self._reconnect()
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    delay = min(RETRY_DELAY_BASE * (2 ** attempt), RETRY_DELAY_MAX)
+                    logger.warning(
+                        f"{operation_name} failed (attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                        f"Retrying in {delay:.1f}s..."
+                    )
+                    await asyncio.sleep(delay)
+                    self._reconnect()
+        
+        logger.error(f"{operation_name} failed after {max_retries + 1} attempts: {last_error}")
+        raise StorageError(operation_name, str(last_error))
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """
+        Check MinIO health and connectivity.
+        
+        Returns:
+            Dict with health status and details
+        """
+        try:
+            start_time = time.time()
+            
+            # Try to list buckets as health check
+            buckets = await self._run_sync(self._client.list_buckets)
+            
+            latency_ms = (time.time() - start_time) * 1000
+            bucket_names = [b.name for b in buckets]
+            
+            return {
+                "status": "healthy",
+                "latency_ms": round(latency_ms, 2),
+                "endpoint": self.endpoint,
+                "buckets": bucket_names,
+                "buckets_ready": all(
+                    b in bucket_names for b in [
+                        self.bucket_uploads,
+                        self.bucket_preprocessed,
+                        self.bucket_results
+                    ]
+                )
+            }
+        except Exception as e:
+            logger.error(f"MinIO health check failed: {e}")
+            return {
+                "status": "unhealthy",
+                "error": str(e),
+                "endpoint": self.endpoint
+            }
+    
+    async def wait_for_ready(self, timeout: float = 30.0, interval: float = 1.0) -> bool:
+        """
+        Wait for MinIO to become ready.
+        
+        Args:
+            timeout: Maximum wait time in seconds
+            interval: Check interval in seconds
+            
+        Returns:
+            True if MinIO is ready, False if timeout
+        """
+        start_time = time.time()
+        
+        while (time.time() - start_time) < timeout:
+            try:
+                health = await self.health_check()
+                if health["status"] == "healthy":
+                    logger.info(f"MinIO ready after {time.time() - start_time:.1f}s")
+                    return True
+            except Exception:
+                pass
+            
+            await asyncio.sleep(interval)
+        
+        logger.error(f"MinIO not ready after {timeout}s timeout")
+        return False
     
     async def ensure_bucket(self, bucket: str) -> None:
         """
@@ -84,27 +244,62 @@ class StorageClient(IStorage):
             bucket: Bucket name to ensure
         """
         try:
-            exists = await self._run_sync(
+            exists = await self._retry_operation(
+                f"check_bucket_{bucket}",
                 self._client.bucket_exists,
                 bucket
             )
             if not exists:
-                await self._run_sync(
+                await self._retry_operation(
+                    f"create_bucket_{bucket}",
                     self._client.make_bucket,
                     bucket
                 )
                 logger.info(f"Created bucket: {bucket}")
-        except S3Error as e:
+            else:
+                logger.debug(f"Bucket exists: {bucket}")
+        except StorageError:
+            raise
+        except Exception as e:
             raise StorageError("ensure_bucket", str(e))
     
     async def ensure_default_buckets(self) -> None:
-        """Ensure all default buckets exist."""
-        for bucket in [
+        """
+        Ensure all default buckets exist.
+        
+        This is called on startup and ensures all required buckets
+        are created before any operations.
+        """
+        if self._buckets_created:
+            logger.debug("Buckets already verified")
+            return
+        
+        # Wait for MinIO to be ready
+        ready = await self.wait_for_ready(timeout=30.0)
+        if not ready:
+            raise StorageError("ensure_default_buckets", "MinIO not available")
+        
+        buckets = [
             self.bucket_uploads,
             self.bucket_preprocessed,
             self.bucket_results
-        ]:
+        ]
+        
+        for bucket in buckets:
             await self.ensure_bucket(bucket)
+        
+        self._buckets_created = True
+        logger.info(f"All default buckets ready: {buckets}")
+    
+    async def _ensure_bucket_exists(self, bucket: str) -> None:
+        """
+        Internal method to ensure bucket exists before operation.
+        
+        Args:
+            bucket: Bucket name to verify
+        """
+        if not self._buckets_created:
+            await self.ensure_default_buckets()
     
     async def upload_file(
         self,
@@ -114,7 +309,7 @@ class StorageClient(IStorage):
         content_type: str = "application/octet-stream"
     ) -> str:
         """
-        Upload file to MinIO.
+        Upload file to MinIO with automatic retry.
         
         Args:
             file: File content as bytes or binary stream
@@ -125,32 +320,32 @@ class StorageClient(IStorage):
         Returns:
             Object key for retrieval
         """
-        try:
-            # Convert bytes to BytesIO if needed
-            if isinstance(file, bytes):
-                file_data = io.BytesIO(file)
-                file_size = len(file)
-            else:
-                file.seek(0, 2)  # Seek to end
-                file_size = file.tell()
-                file.seek(0)  # Reset to beginning
-                file_data = file
-            
-            await self._run_sync(
-                self._client.put_object,
-                bucket,
-                object_key,
-                file_data,
-                file_size,
-                content_type=content_type
-            )
-            
-            logger.info(f"Uploaded {object_key} to {bucket}")
-            return object_key
-            
-        except S3Error as e:
-            logger.error(f"Upload failed: {e}")
-            raise StorageError("upload", str(e))
+        # Ensure bucket exists
+        await self._ensure_bucket_exists(bucket)
+        
+        # Convert bytes to BytesIO if needed
+        if isinstance(file, bytes):
+            file_data = io.BytesIO(file)
+            file_size = len(file)
+        else:
+            file.seek(0, 2)
+            file_size = file.tell()
+            file.seek(0)
+            file_data = file
+        
+        # Upload with retry
+        await self._retry_operation(
+            f"upload_{object_key}",
+            self._client.put_object,
+            bucket,
+            object_key,
+            file_data,
+            file_size,
+            content_type=content_type
+        )
+        
+        logger.info(f"Uploaded {object_key} to {bucket} ({file_size} bytes)")
+        return object_key
     
     async def download_file(
         self,
@@ -158,7 +353,7 @@ class StorageClient(IStorage):
         object_key: str
     ) -> bytes:
         """
-        Download file from MinIO.
+        Download file from MinIO with automatic retry.
         
         Args:
             bucket: Source bucket name
@@ -167,26 +362,27 @@ class StorageClient(IStorage):
         Returns:
             File content as bytes
         """
+        await self._ensure_bucket_exists(bucket)
+        
+        response = await self._retry_operation(
+            f"download_{object_key}",
+            self._client.get_object,
+            bucket,
+            object_key
+        )
+        
         try:
-            response = await self._run_sync(
-                self._client.get_object,
-                bucket,
-                object_key
-            )
             data = response.read()
+            return data
+        finally:
             response.close()
             response.release_conn()
-            return data
-            
-        except S3Error as e:
-            logger.error(f"Download failed: {e}")
-            raise StorageError("download", str(e))
     
     async def download_stream(
         self,
         bucket: str,
         object_key: str,
-        chunk_size: int = 1024 * 1024  # 1MB chunks
+        chunk_size: int = 1024 * 1024
     ) -> AsyncIterator[bytes]:
         """
         Stream download file in chunks.
@@ -194,31 +390,29 @@ class StorageClient(IStorage):
         Args:
             bucket: Source bucket name
             object_key: Object key/path within bucket
-            chunk_size: Size of each chunk
+            chunk_size: Size of each chunk (default 1MB)
             
         Yields:
             File content chunks
         """
+        await self._ensure_bucket_exists(bucket)
+        
+        response = await self._retry_operation(
+            f"stream_{object_key}",
+            self._client.get_object,
+            bucket,
+            object_key
+        )
+        
         try:
-            response = await self._run_sync(
-                self._client.get_object,
-                bucket,
-                object_key
-            )
-            
-            try:
-                while True:
-                    chunk = response.read(chunk_size)
-                    if not chunk:
-                        break
-                    yield chunk
-            finally:
-                response.close()
-                response.release_conn()
-                
-        except S3Error as e:
-            logger.error(f"Stream download failed: {e}")
-            raise StorageError("stream_download", str(e))
+            while True:
+                chunk = response.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            response.close()
+            response.release_conn()
     
     async def get_presigned_url(
         self,
@@ -237,18 +431,16 @@ class StorageClient(IStorage):
         Returns:
             Presigned download URL
         """
-        try:
-            url = await self._run_sync(
-                self._client.presigned_get_object,
-                bucket,
-                object_key,
-                expires=timedelta(seconds=expires_seconds)
-            )
-            return url
-            
-        except S3Error as e:
-            logger.error(f"Presigned URL generation failed: {e}")
-            raise StorageError("presigned_url", str(e))
+        await self._ensure_bucket_exists(bucket)
+        
+        url = await self._retry_operation(
+            f"presigned_{object_key}",
+            self._client.presigned_get_object,
+            bucket,
+            object_key,
+            expires=timedelta(seconds=expires_seconds)
+        )
+        return url
     
     async def delete_file(
         self,
@@ -262,17 +454,15 @@ class StorageClient(IStorage):
             bucket: Bucket name
             object_key: Object key to delete
         """
-        try:
-            await self._run_sync(
-                self._client.remove_object,
-                bucket,
-                object_key
-            )
-            logger.info(f"Deleted {object_key} from {bucket}")
-            
-        except S3Error as e:
-            logger.error(f"Delete failed: {e}")
-            raise StorageError("delete", str(e))
+        await self._ensure_bucket_exists(bucket)
+        
+        await self._retry_operation(
+            f"delete_{object_key}",
+            self._client.remove_object,
+            bucket,
+            object_key
+        )
+        logger.info(f"Deleted {object_key} from {bucket}")
     
     async def file_exists(
         self,
@@ -289,17 +479,20 @@ class StorageClient(IStorage):
         Returns:
             True if file exists
         """
+        await self._ensure_bucket_exists(bucket)
+        
         try:
-            await self._run_sync(
+            await self._retry_operation(
+                f"stat_{object_key}",
                 self._client.stat_object,
                 bucket,
                 object_key
             )
             return True
-        except S3Error as e:
-            if e.code == "NoSuchKey":
+        except StorageError as e:
+            if "NoSuchKey" in str(e):
                 return False
-            raise StorageError("file_exists", str(e))
+            raise
     
     async def list_objects(
         self,
@@ -318,6 +511,8 @@ class StorageClient(IStorage):
         Returns:
             List of object keys
         """
+        await self._ensure_bucket_exists(bucket)
+        
         try:
             objects = self._client.list_objects(
                 bucket,
@@ -325,7 +520,6 @@ class StorageClient(IStorage):
                 recursive=recursive
             )
             return [obj.object_name for obj in objects]
-            
         except S3Error as e:
             logger.error(f"List objects failed: {e}")
             raise StorageError("list_objects", str(e))
@@ -349,20 +543,55 @@ class StorageClient(IStorage):
         Returns:
             Destination object key
         """
-        try:
-            from minio.commonconfig import CopySource
+        await self._ensure_bucket_exists(source_bucket)
+        await self._ensure_bucket_exists(dest_bucket)
+        
+        from minio.commonconfig import CopySource
+        
+        await self._retry_operation(
+            f"copy_{source_key}_to_{dest_key}",
+            self._client.copy_object,
+            dest_bucket,
+            dest_key,
+            CopySource(source_bucket, source_key)
+        )
+        
+        logger.info(f"Copied {source_bucket}/{source_key} to {dest_bucket}/{dest_key}")
+        return dest_key
+    
+    async def get_object_info(
+        self,
+        bucket: str,
+        object_key: str
+    ) -> Dict[str, Any]:
+        """
+        Get object metadata/info.
+        
+        Args:
+            bucket: Bucket name
+            object_key: Object key
             
-            await self._run_sync(
-                self._client.copy_object,
-                dest_bucket,
-                dest_key,
-                CopySource(source_bucket, source_key)
-            )
-            return dest_key
-            
-        except S3Error as e:
-            logger.error(f"Copy failed: {e}")
-            raise StorageError("copy", str(e))
+        Returns:
+            Dict with object metadata
+        """
+        await self._ensure_bucket_exists(bucket)
+        
+        stat = await self._retry_operation(
+            f"info_{object_key}",
+            self._client.stat_object,
+            bucket,
+            object_key
+        )
+        
+        return {
+            "bucket": bucket,
+            "object_key": object_key,
+            "size": stat.size,
+            "content_type": stat.content_type,
+            "last_modified": stat.last_modified.isoformat() if stat.last_modified else None,
+            "etag": stat.etag,
+            "metadata": dict(stat.metadata) if stat.metadata else {}
+        }
 
 
 # Singleton instance
@@ -375,3 +604,17 @@ def get_storage_client() -> StorageClient:
     if _storage_client is None:
         _storage_client = StorageClient()
     return _storage_client
+
+
+async def init_storage() -> StorageClient:
+    """
+    Initialize storage client and ensure buckets exist.
+    
+    Call this on application startup to guarantee MinIO is ready.
+    
+    Returns:
+        Initialized StorageClient
+    """
+    client = get_storage_client()
+    await client.ensure_default_buckets()
+    return client
