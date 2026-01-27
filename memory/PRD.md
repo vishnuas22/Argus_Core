@@ -281,19 +281,17 @@ CELERY_RESULT_BACKEND=redis://localhost:6379/1
 ## Backlog
 
 ### P0 - Critical
-- [ ] Implement Celery workers for background analysis
-- [ ] Add ML model loading via ModelManager
+- [ ] React frontend with file upload
+- [ ] Trust Score display in frontend
+- [ ] WebSocket real-time progress
 
 ### P1 - High Priority
-- [ ] Video analyzer implementation
-- [ ] Audio analyzer implementation
-- [ ] Report generation (PDF)
+- [ ] ML model loading via ModelManager
+- [ ] End-to-end media analysis flow
 
 ### P2 - Medium Priority
-- [ ] C2PA Content Credentials integration
-- [ ] TensorRT optimization
-- [ ] Audit logging
-
+- [ ] PDF report generation
+- [ ] C2PA forensics integration
 ---
 
 ## Notes
