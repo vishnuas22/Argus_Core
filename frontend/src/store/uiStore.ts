@@ -148,7 +148,7 @@ export const useUIStore = create<UIState & UIActions>()(
       /**
        * Open a modal with optional data
        */
-      openModal: (type, data = null) => {
+      openModal: (type, data = undefined) => {
         set(
           { activeModal: type, modalData: data },
           false,
@@ -271,11 +271,11 @@ export const useUIStore = create<UIState & UIActions>()(
       /**
        * Set page loading state
        */
-      setPageLoading: (isLoading, message = null) => {
+      setPageLoading: (isLoading, message = undefined) => {
         set(
           {
             isPageLoading: isLoading,
-            loadingMessage: isLoading ? message : null,
+            loadingMessage: isLoading ? message : undefined,
           },
           false,
           'setPageLoading'
