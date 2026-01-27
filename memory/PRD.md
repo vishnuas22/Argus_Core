@@ -141,6 +141,20 @@ Multi-Modal Deepfake Detection & Forensic Analysis Platform
 | MongoDB | 27017 | ✅ Running |
 | Redis | 6379 | ✅ Running |
 | MinIO | 9000 (API), 9001 (Console) | ✅ Running |
+| Redis | 6379 | ✅ Running (Auto-configured) |
+| MinIO | 9000 (API), 9001 (Console) | ✅ Running (Auto-configured) |
+
+## Infrastructure Auto-Setup (2026-01-27)
+- Redis installed and configured via supervisor (auto-start enabled)
+- MinIO installed and configured via supervisor (auto-start enabled)
+- All services automatically start with backend on boot
+- Health checks passing for all components
+- Storage integration fully operational
+
+### Auto-Start Configuration
+Services are managed via `/etc/supervisor/conf.d/`:
+- `redis.conf` - Redis server on port 6379
+- `minio.conf` - MinIO server on port 9000 (API) and 9001 (Console)
 
 ## MinIO Buckets Created
 - `argus-uploads` - File uploads
