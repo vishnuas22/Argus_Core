@@ -542,7 +542,7 @@ async def startup_dependencies() -> None:
     except Exception as e:
         logger.warning(f"Database connection failed (non-critical): {e}")
     
-    # Initialize storage (optional - may not be available)
+    # Initialize storage
     try:
         storage = get_storage_client()
         await storage.ensure_default_buckets()
