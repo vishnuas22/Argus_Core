@@ -3,6 +3,13 @@
 ## Original Problem Statement
 Build "Argus Core - Multi-Modal Deepfake Detection & Forensic Analysis Platform" to address a $40B projected fraud threat. Current industry standard for human detection is only 24.5%. Need automated, multi-modal AI analysis (Text, Audio, Video, Image).
 
+## Tech Stack
+- **Backend**: FastAPI (Python)
+- **Frontend**: Next.js 14 (TypeScript/React)
+- **Database**: MongoDB
+- **Storage**: MinIO
+- **Cache**: Redis
+
 ## Phase 1 Status: Research & Architecture
 **Status:** COMPLETED ✅  
 **Date:** January 2026
