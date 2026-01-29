@@ -60,8 +60,8 @@ import {
   Music,
   Info,
   BarChart3,
-  type LucideIcon,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { AudioResult } from '@/types/analysis';
 
 // ============== TYPES ==============

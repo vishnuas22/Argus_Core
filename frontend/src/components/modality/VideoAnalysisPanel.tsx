@@ -55,8 +55,8 @@ import {
   Info,
   ImageIcon,
   Clock,
-  type LucideIcon,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { VideoResult, FrameResult, SpatialResult, TemporalResult, LipsyncResult } from '@/types/analysis';
 
 // ============== TYPES ==============

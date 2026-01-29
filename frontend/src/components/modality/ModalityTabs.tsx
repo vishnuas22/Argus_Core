@@ -48,8 +48,8 @@ import {
   FileText,
   FileSearch2,
   Info,
-  type LucideIcon,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type {
   VideoResult,
   AudioResult,

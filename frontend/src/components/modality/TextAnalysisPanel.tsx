@@ -54,8 +54,8 @@ import {
   TrendingUp,
   Info,
   Zap,
-  type LucideIcon,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { TextResult } from '@/types/analysis';
 
 // ============== TYPES ==============

@@ -58,8 +58,8 @@ import {
   MapPin,
   Camera,
   Settings2,
-  type LucideIcon,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { MetadataResult, C2PAData, EXIFData } from '@/types/analysis';
 
 // ============== TYPES ==============
