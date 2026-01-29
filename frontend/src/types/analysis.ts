@@ -192,14 +192,19 @@ export interface AudioSegment {
 
 /**
  * Audio analysis result
+ * Matches backend AudioResult from schemas/schemas.py
  */
 export interface AudioResult {
   score: number;
   confidence: number;
   model_used: string;
-  voice_cloning_probability: number;
-  spectral_anomalies: number;
-  anomaly_segments: AudioSegment[];
+  /** Probability audio is synthetic (0-1) */
+  synthetic_probability: number;
+  /** Whether vocoder artifacts detected */
+  vocoder_artifacts_detected: boolean;
+  /** Voice consistency across segments (0-1) */
+  voice_consistency_score: number;
+  /** URL to mel-spectrogram visualization */
   spectrogram_url?: string;
 }
 
@@ -207,15 +212,22 @@ export interface AudioResult {
 
 /**
  * Text analysis result for AI-generated content
+ * Matches backend TextResult from schemas/schemas.py
  */
 export interface TextResult {
   score: number;
   confidence: number;
   model_used: string;
+  /** Probability text is AI-generated (0-1) */
   ai_probability: number;
-  perplexity: number;
-  burstiness: number;
-  word_count: number;
+  /** GPT-2 perplexity score */
+  perplexity_score: number;
+  /** Sentence length variance (burstiness) */
+  burstiness_score: number;
+  /** RADAR classifier score */
+  radar_score?: number;
+  /** Word count analyzed */
+  word_count?: number;
 }
 
 // ============== METADATA RESULTS ==============
