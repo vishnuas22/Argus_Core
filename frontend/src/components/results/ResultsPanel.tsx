@@ -54,6 +54,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 // Result Components
 import { TrustScoreGauge, TrustScoreGaugeSkeleton } from './TrustScoreGauge';
 import { VerdictBadge, VerdictBadgeHero, VerdictBadgeSkeleton, getVerdictFromScore } from './VerdictBadge';
+import { ScoreBreakdown, ScoreBreakdownSkeleton } from './ScoreBreakdown';
+import { ExplanationPanel, ExplanationPanelSkeleton } from './ExplanationPanel';
 
 // Hooks
 import { useAnalysisDetail, useReport } from '@/hooks/useAnalysisDetail';
