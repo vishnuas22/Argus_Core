@@ -3,12 +3,16 @@
 ## Original Problem Statement
 Build "Argus Core - Multi-Modal Deepfake Detection & Forensic Analysis Platform" to address a $40B projected fraud threat. Current industry standard for human detection is only 24.5%. Need automated, multi-modal AI analysis (Text, Audio, Video, Image).
 
-## Tech Stack
-- **Backend**: FastAPI (Python)
-- **Frontend**: Next.js 14 (TypeScript/React)
-- **Database**: MongoDB
-- **Storage**: MinIO
-- **Cache**: Redis
+## Architecture
+- `/app/backend/` - FastAPI server with ML pipeline
+- `/app/frontend/` - Next.js 14 with React Query
+- MongoDB for data persistence
+- Redis/Celery for async processing (configured)
+
+## Next Steps / Backlog
+- P0: Configure MinIO storage endpoints
+- P1: Setup Redis/Celery workers for async processing
+- P2: Configure ML model paths and GPU settings
 
 ## Phase 1 Status: Research & Architecture
 **Status:** COMPLETED ✅  
@@ -117,22 +121,6 @@ Build "Argus Core - Multi-Modal Deepfake Detection & Forensic Analysis Platform"
 
 ## Overview
 Multi-Modal Deepfake Detection & Forensic Analysis Platform
-
-## Repository
-- **Source**: https://github.com/vishnuas22/Argus_Core.git
-- **Branch**: main
-
-## Architecture
-- **Backend**: FastAPI (Python)
-- **Database**: MongoDB
-- **Storage**: MinIO (optional - disabled for current env)
-- **Cache**: Redis (optional - disabled for current env)
-
-## What's Been Implemented
-- [2026-01-26] Full repo replacement from GitHub
-- [2026-01-26] Dependencies installed (100+ Python packages)
-- [2026-01-26] Backend service running on port 8001
-- [2026-01-26] Modified startup to make MinIO/Redis optional
 
 ## Available Endpoints
 - `GET /` - API info
