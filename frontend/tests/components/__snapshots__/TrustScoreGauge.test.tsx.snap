@@ -1,0 +1,447 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`TrustScoreGauge > Snapshots > should match snapshot for authentic score 1`] = `
+<div
+  aria-label="Trust Score: 90 out of 100"
+  class="relative inline-flex items-center justify-center"
+  data-testid="trust-score-gauge"
+  role="img"
+  style="width: 200px; height: 200px;"
+>
+  <svg
+    aria-hidden="true"
+    class="absolute inset-0"
+    height="200"
+    viewBox="0 0 200 200"
+    width="200"
+  >
+    <g
+      class="gauge-group"
+      transform="translate(100, 100)"
+    >
+      <path
+        class="gauge-background"
+        d="M-57.206,57.206A4,4,0,0,1,-62.999,57.063A85,85,0,1,1,62.999,57.063A4,4,0,0,1,57.206,57.206L45.166,45.166A4,4,0,0,1,44.995,39.692A60,60,0,1,0,-44.995,39.692A4,4,0,0,1,-45.166,45.166Z"
+        fill="hsl(var(--muted))"
+        opacity="0.3"
+      />
+      <path
+        class="gauge-score"
+        d="M-57.206,57.206A4,4,0,0,1,-62.999,57.063A85,85,0,1,1,82.038,22.242A4,4,0,0,1,76.942,25L60.749,19.738A4,4,0,0,1,58.111,14.938A60,60,0,1,0,-44.995,39.692A4,4,0,0,1,-45.166,45.166Z"
+        fill="#22c55e"
+        filter="url(#gauge-glow)"
+      />
+      <g
+        class="gauge-ticks"
+      >
+        <g
+          class="tick"
+          transform="translate(-65.76093065034893, 65.76093065034891)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+        <g
+          class="tick"
+          transform="translate(-91.85501567534781, -14.548405248741476)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+        <g
+          class="tick"
+          transform="translate(-42.221116475777855, -82.86360674951821)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+        <g
+          class="tick"
+          transform="translate(42.221116475777855, -82.86360674951821)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+        <g
+          class="tick"
+          transform="translate(91.85501567534781, -14.548405248741476)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+        <g
+          class="tick"
+          transform="translate(65.76093065034893, 65.76093065034891)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+      </g>
+      <circle
+        class="gauge-indicator"
+        cx="68.95159743139864"
+        cy="22.40373209218368"
+        fill="#22c55e"
+        filter="url(#gauge-glow)"
+        r="6"
+        stroke="white"
+        stroke-width="2"
+      />
+    </g>
+    <defs>
+      <filter
+        height="200%"
+        id="gauge-glow"
+        width="200%"
+        x="-50%"
+        y="-50%"
+      >
+        <fegaussianblur
+          result="coloredBlur"
+          stdDeviation="3"
+        />
+        <femerge>
+          <femergenode
+            in="coloredBlur"
+          />
+          <femergenode
+            in="SourceGraphic"
+          />
+        </femerge>
+      </filter>
+    </defs>
+  </svg>
+  <div
+    class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none"
+    style="padding: 30px;"
+  >
+    <span
+      class="font-bold tabular-nums transition-colors duration-500 text-4xl"
+      data-testid="gauge-score-value"
+      style="color: rgb(34, 197, 94);"
+    >
+      90
+    </span>
+    <span
+      class="text-muted-foreground mt-1 text-sm"
+    >
+      / 100
+    </span>
+  </div>
+</div>
+`;
+
+exports[`TrustScoreGauge > Snapshots > should match snapshot for deepfake score 1`] = `
+<div
+  aria-label="Trust Score: 20 out of 100"
+  class="relative inline-flex items-center justify-center"
+  data-testid="trust-score-gauge"
+  role="img"
+  style="width: 200px; height: 200px;"
+>
+  <svg
+    aria-hidden="true"
+    class="absolute inset-0"
+    height="200"
+    viewBox="0 0 200 200"
+    width="200"
+  >
+    <g
+      class="gauge-group"
+      transform="translate(100, 100)"
+    >
+      <path
+        class="gauge-background"
+        d="M-57.206,57.206A4,4,0,0,1,-62.999,57.063A85,85,0,1,1,62.999,57.063A4,4,0,0,1,57.206,57.206L45.166,45.166A4,4,0,0,1,44.995,39.692A60,60,0,1,0,-44.995,39.692A4,4,0,0,1,-45.166,45.166Z"
+        fill="hsl(var(--muted))"
+        opacity="0.3"
+      />
+      <path
+        class="gauge-score"
+        d="M-57.206,57.206A4,4,0,0,1,-62.999,57.063A85,85,0,0,1,-84.508,-9.135A4,4,0,0,1,-79.905,-12.656L-63.088,-9.992A4,4,0,0,1,-59.732,-5.664A60,60,0,0,0,-44.995,39.692A4,4,0,0,1,-45.166,45.166Z"
+        fill="#f97316"
+        filter="url(#gauge-glow)"
+      />
+      <g
+        class="gauge-ticks"
+      >
+        <g
+          class="tick"
+          transform="translate(-65.76093065034893, 65.76093065034891)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+        <g
+          class="tick"
+          transform="translate(-91.85501567534781, -14.548405248741476)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+        <g
+          class="tick"
+          transform="translate(-42.221116475777855, -82.86360674951821)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+        <g
+          class="tick"
+          transform="translate(42.221116475777855, -82.86360674951821)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+        <g
+          class="tick"
+          transform="translate(91.85501567534781, -14.548405248741476)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+        <g
+          class="tick"
+          transform="translate(65.76093065034893, 65.76093065034891)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+      </g>
+      <circle
+        class="gauge-indicator"
+        cx="-71.60740469314749"
+        cy="-11.341498715416742"
+        fill="#f97316"
+        filter="url(#gauge-glow)"
+        r="6"
+        stroke="white"
+        stroke-width="2"
+      />
+    </g>
+    <defs>
+      <filter
+        height="200%"
+        id="gauge-glow"
+        width="200%"
+        x="-50%"
+        y="-50%"
+      >
+        <fegaussianblur
+          result="coloredBlur"
+          stdDeviation="3"
+        />
+        <femerge>
+          <femergenode
+            in="coloredBlur"
+          />
+          <femergenode
+            in="SourceGraphic"
+          />
+        </femerge>
+      </filter>
+    </defs>
+  </svg>
+  <div
+    class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none"
+    style="padding: 30px;"
+  >
+    <span
+      class="font-bold tabular-nums transition-colors duration-500 text-4xl"
+      data-testid="gauge-score-value"
+    >
+      20
+    </span>
+    <span
+      class="text-muted-foreground mt-1 text-sm"
+    >
+      / 100
+    </span>
+  </div>
+</div>
+`;
+
+exports[`TrustScoreGauge > Snapshots > should match snapshot for uncertain score 1`] = `
+<div
+  aria-label="Trust Score: 50 out of 100"
+  class="relative inline-flex items-center justify-center"
+  data-testid="trust-score-gauge"
+  role="img"
+  style="width: 200px; height: 200px;"
+>
+  <svg
+    aria-hidden="true"
+    class="absolute inset-0"
+    height="200"
+    viewBox="0 0 200 200"
+    width="200"
+  >
+    <g
+      class="gauge-group"
+      transform="translate(100, 100)"
+    >
+      <path
+        class="gauge-background"
+        d="M-57.206,57.206A4,4,0,0,1,-62.999,57.063A85,85,0,1,1,62.999,57.063A4,4,0,0,1,57.206,57.206L45.166,45.166A4,4,0,0,1,44.995,39.692A60,60,0,1,0,-44.995,39.692A4,4,0,0,1,-45.166,45.166Z"
+        fill="hsl(var(--muted))"
+        opacity="0.3"
+      />
+      <path
+        class="gauge-score"
+        d="M-57.206,57.206A4,4,0,0,1,-62.999,57.063A85,85,0,0,1,-4.198,-84.896A4,4,0,0,1,0,-80.901L0,-63.875A4,4,0,0,1,-3.75,-59.883A60,60,0,0,0,-44.995,39.692A4,4,0,0,1,-45.166,45.166Z"
+        fill="#eab308"
+        filter="url(#gauge-glow)"
+      />
+      <g
+        class="gauge-ticks"
+      >
+        <g
+          class="tick"
+          transform="translate(-65.76093065034893, 65.76093065034891)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+        <g
+          class="tick"
+          transform="translate(-91.85501567534781, -14.548405248741476)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+        <g
+          class="tick"
+          transform="translate(-42.221116475777855, -82.86360674951821)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+        <g
+          class="tick"
+          transform="translate(42.221116475777855, -82.86360674951821)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+        <g
+          class="tick"
+          transform="translate(91.85501567534781, -14.548405248741476)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+        <g
+          class="tick"
+          transform="translate(65.76093065034893, 65.76093065034891)"
+        >
+          <circle
+            fill="currentColor"
+            opacity="0.3"
+            r="2"
+          />
+        </g>
+      </g>
+      <circle
+        class="gauge-indicator"
+        cx="0"
+        cy="-72.5"
+        fill="#eab308"
+        filter="url(#gauge-glow)"
+        r="6"
+        stroke="white"
+        stroke-width="2"
+      />
+    </g>
+    <defs>
+      <filter
+        height="200%"
+        id="gauge-glow"
+        width="200%"
+        x="-50%"
+        y="-50%"
+      >
+        <fegaussianblur
+          result="coloredBlur"
+          stdDeviation="3"
+        />
+        <femerge>
+          <femergenode
+            in="coloredBlur"
+          />
+          <femergenode
+            in="SourceGraphic"
+          />
+        </femerge>
+      </filter>
+    </defs>
+  </svg>
+  <div
+    class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none"
+    style="padding: 30px;"
+  >
+    <span
+      class="font-bold tabular-nums transition-colors duration-500 text-4xl"
+      data-testid="gauge-score-value"
+      style="color: rgb(234, 179, 8);"
+    >
+      50
+    </span>
+    <span
+      class="text-muted-foreground mt-1 text-sm"
+    >
+      / 100
+    </span>
+  </div>
+</div>
+`;
