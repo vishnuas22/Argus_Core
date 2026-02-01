@@ -19,6 +19,7 @@ import type { Metadata, Viewport } from 'next';
 import { Inter, JetBrains_Mono } from 'next/font/google';
 import { QueryProvider } from '@/providers/QueryProvider';
 import { ThemeProvider } from '@/providers/ThemeProvider';
+import { ErrorBoundary } from '@/components/errors/ErrorBoundary';
 
 // Primary font for UI text
 const inter = Inter({
@@ -89,14 +90,16 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <body className="min-h-screen bg-background font-sans antialiased">
-        <ThemeProvider defaultTheme="system">
-          <QueryProvider>
-            {/* Main application content */}
-            <div className="relative flex min-h-screen flex-col">
-              {children}
-            </div>
-          </QueryProvider>
-        </ThemeProvider>
+        <ErrorBoundary>
+          <ThemeProvider defaultTheme="system">
+            <QueryProvider>
+              {/* Main application content */}
+              <div className="relative flex min-h-screen flex-col">
+                {children}
+              </div>
+            </QueryProvider>
+          </ThemeProvider>
+        </ErrorBoundary>
       </body>
     </html>
   );
