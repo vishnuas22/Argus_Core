@@ -1,0 +1,503 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`UploadZone > Snapshots > should match snapshot in default state 1`] = `
+<div
+  aria-disabled="false"
+  aria-label="Upload file for analysis"
+  class="relative flex flex-col items-center justify-center w-full min-h-[280px] rounded-xl border-2 border-dashed transition-all duration-200 ease-in-out cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 border-border bg-muted/30 hover:bg-muted/50 hover:border-primary/50"
+  data-testid="upload-zone"
+  role="button"
+  tabindex="0"
+>
+  <input
+    accept=".mp4,.webm,.mov,.avi,.mp3,.wav,.ogg,.flac,.jpg,.jpeg,.png,.webp"
+    aria-hidden="true"
+    class="hidden"
+    data-testid="upload-zone-input"
+    type="file"
+  />
+  <div
+    class="flex flex-col items-center gap-4 p-8 text-center"
+  >
+    <div
+      class="p-4 rounded-full transition-colors bg-muted"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-upload h-8 w-8 transition-colors text-muted-foreground"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M12 3v12"
+        />
+        <path
+          d="m17 8-5-5-5 5"
+        />
+        <path
+          d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
+        />
+      </svg>
+    </div>
+    <div
+      class="space-y-2"
+    >
+      <p
+        class="text-lg font-medium text-foreground"
+      >
+        Drop file or click to upload
+      </p>
+      <p
+        class="text-sm text-muted-foreground"
+      >
+        Maximum file size: 
+        500
+        MB
+      </p>
+    </div>
+    <div
+      class="flex items-center gap-6 text-xs text-muted-foreground"
+    >
+      <div
+        class="flex items-center gap-1.5"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-file-play h-4 w-4"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"
+          />
+          <path
+            d="M14 2v5a1 1 0 0 0 1 1h5"
+          />
+          <path
+            d="M15.033 13.44a.647.647 0 0 1 0 1.12l-4.065 2.352a.645.645 0 0 1-.968-.56v-4.704a.645.645 0 0 1 .967-.56z"
+          />
+        </svg>
+        <span>
+          MP4, WebM, MOV
+        </span>
+      </div>
+      <div
+        class="flex items-center gap-1.5"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-file-headphone h-4 w-4"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M4 6.835V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.706.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2h-.343"
+          />
+          <path
+            d="M14 2v5a1 1 0 0 0 1 1h5"
+          />
+          <path
+            d="M2 19a2 2 0 0 1 4 0v1a2 2 0 0 1-4 0v-4a6 6 0 0 1 12 0v4a2 2 0 0 1-4 0v-1a2 2 0 0 1 4 0"
+          />
+        </svg>
+        <span>
+          MP3, WAV, OGG
+        </span>
+      </div>
+      <div
+        class="flex items-center gap-1.5"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-image h-4 w-4"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <rect
+            height="18"
+            rx="2"
+            ry="2"
+            width="18"
+            x="3"
+            y="3"
+          />
+          <circle
+            cx="9"
+            cy="9"
+            r="2"
+          />
+          <path
+            d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"
+          />
+        </svg>
+        <span>
+          JPG, PNG, WebP
+        </span>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`UploadZone > Snapshots > should match snapshot in disabled state 1`] = `
+<div
+  aria-disabled="true"
+  aria-label="Upload file for analysis"
+  class="relative flex flex-col items-center justify-center w-full min-h-[280px] rounded-xl border-2 border-dashed transition-all duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 opacity-50 cursor-not-allowed border-muted"
+  data-testid="upload-zone"
+  role="button"
+  tabindex="-1"
+>
+  <input
+    accept=".mp4,.webm,.mov,.avi,.mp3,.wav,.ogg,.flac,.jpg,.jpeg,.png,.webp"
+    aria-hidden="true"
+    class="hidden"
+    data-testid="upload-zone-input"
+    disabled=""
+    type="file"
+  />
+  <div
+    class="flex flex-col items-center gap-4 p-8 text-center"
+  >
+    <div
+      class="p-4 rounded-full transition-colors bg-muted"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-upload h-8 w-8 transition-colors text-muted-foreground"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M12 3v12"
+        />
+        <path
+          d="m17 8-5-5-5 5"
+        />
+        <path
+          d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
+        />
+      </svg>
+    </div>
+    <div
+      class="space-y-2"
+    >
+      <p
+        class="text-lg font-medium text-foreground"
+      >
+        Drop file or click to upload
+      </p>
+      <p
+        class="text-sm text-muted-foreground"
+      >
+        Maximum file size: 
+        500
+        MB
+      </p>
+    </div>
+    <div
+      class="flex items-center gap-6 text-xs text-muted-foreground"
+    >
+      <div
+        class="flex items-center gap-1.5"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-file-play h-4 w-4"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"
+          />
+          <path
+            d="M14 2v5a1 1 0 0 0 1 1h5"
+          />
+          <path
+            d="M15.033 13.44a.647.647 0 0 1 0 1.12l-4.065 2.352a.645.645 0 0 1-.968-.56v-4.704a.645.645 0 0 1 .967-.56z"
+          />
+        </svg>
+        <span>
+          MP4, WebM, MOV
+        </span>
+      </div>
+      <div
+        class="flex items-center gap-1.5"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-file-headphone h-4 w-4"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M4 6.835V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.706.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2h-.343"
+          />
+          <path
+            d="M14 2v5a1 1 0 0 0 1 1h5"
+          />
+          <path
+            d="M2 19a2 2 0 0 1 4 0v1a2 2 0 0 1-4 0v-4a6 6 0 0 1 12 0v4a2 2 0 0 1-4 0v-1a2 2 0 0 1 4 0"
+          />
+        </svg>
+        <span>
+          MP3, WAV, OGG
+        </span>
+      </div>
+      <div
+        class="flex items-center gap-1.5"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-image h-4 w-4"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <rect
+            height="18"
+            rx="2"
+            ry="2"
+            width="18"
+            x="3"
+            y="3"
+          />
+          <circle
+            cx="9"
+            cy="9"
+            r="2"
+          />
+          <path
+            d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"
+          />
+        </svg>
+        <span>
+          JPG, PNG, WebP
+        </span>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`UploadZone > Snapshots > should match snapshot with custom maxSize 1`] = `
+<div
+  aria-disabled="false"
+  aria-label="Upload file for analysis"
+  class="relative flex flex-col items-center justify-center w-full min-h-[280px] rounded-xl border-2 border-dashed transition-all duration-200 ease-in-out cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 border-border bg-muted/30 hover:bg-muted/50 hover:border-primary/50"
+  data-testid="upload-zone"
+  role="button"
+  tabindex="0"
+>
+  <input
+    accept=".mp4,.webm,.mov,.avi,.mp3,.wav,.ogg,.flac,.jpg,.jpeg,.png,.webp"
+    aria-hidden="true"
+    class="hidden"
+    data-testid="upload-zone-input"
+    type="file"
+  />
+  <div
+    class="flex flex-col items-center gap-4 p-8 text-center"
+  >
+    <div
+      class="p-4 rounded-full transition-colors bg-muted"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-upload h-8 w-8 transition-colors text-muted-foreground"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M12 3v12"
+        />
+        <path
+          d="m17 8-5-5-5 5"
+        />
+        <path
+          d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
+        />
+      </svg>
+    </div>
+    <div
+      class="space-y-2"
+    >
+      <p
+        class="text-lg font-medium text-foreground"
+      >
+        Drop file or click to upload
+      </p>
+      <p
+        class="text-sm text-muted-foreground"
+      >
+        Maximum file size: 
+        100
+        MB
+      </p>
+    </div>
+    <div
+      class="flex items-center gap-6 text-xs text-muted-foreground"
+    >
+      <div
+        class="flex items-center gap-1.5"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-file-play h-4 w-4"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"
+          />
+          <path
+            d="M14 2v5a1 1 0 0 0 1 1h5"
+          />
+          <path
+            d="M15.033 13.44a.647.647 0 0 1 0 1.12l-4.065 2.352a.645.645 0 0 1-.968-.56v-4.704a.645.645 0 0 1 .967-.56z"
+          />
+        </svg>
+        <span>
+          MP4, WebM, MOV
+        </span>
+      </div>
+      <div
+        class="flex items-center gap-1.5"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-file-headphone h-4 w-4"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M4 6.835V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.706.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2h-.343"
+          />
+          <path
+            d="M14 2v5a1 1 0 0 0 1 1h5"
+          />
+          <path
+            d="M2 19a2 2 0 0 1 4 0v1a2 2 0 0 1-4 0v-4a6 6 0 0 1 12 0v4a2 2 0 0 1-4 0v-1a2 2 0 0 1 4 0"
+          />
+        </svg>
+        <span>
+          MP3, WAV, OGG
+        </span>
+      </div>
+      <div
+        class="flex items-center gap-1.5"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-image h-4 w-4"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <rect
+            height="18"
+            rx="2"
+            ry="2"
+            width="18"
+            x="3"
+            y="3"
+          />
+          <circle
+            cx="9"
+            cy="9"
+            r="2"
+          />
+          <path
+            d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"
+          />
+        </svg>
+        <span>
+          JPG, PNG, WebP
+        </span>
+      </div>
+    </div>
+  </div>
+</div>
+`;
