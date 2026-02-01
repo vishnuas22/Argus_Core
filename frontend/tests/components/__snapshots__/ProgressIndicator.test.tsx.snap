@@ -1,0 +1,737 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ConnectedProgressIndicator > should match snapshot 1`] = `
+<div
+  aria-label="Analysis analyzing: 50%"
+  aria-live="polite"
+  class="rounded-lg border p-4 bg-purple-500/10 border-purple-500/30"
+  data-testid="progress-indicator"
+  role="status"
+>
+  <div
+    class="flex items-center justify-between mb-3"
+  >
+    <div
+      class="flex items-center gap-3"
+    >
+      <div
+        class="flex items-center justify-center w-10 h-10 rounded-full bg-purple-500/10 border border-purple-500/30"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-scan-search h-5 w-5 text-purple-500 animate-pulse"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M3 7V5a2 2 0 0 1 2-2h2"
+          />
+          <path
+            d="M17 3h2a2 2 0 0 1 2 2v2"
+          />
+          <path
+            d="M21 17v2a2 2 0 0 1-2 2h-2"
+          />
+          <path
+            d="M7 21H5a2 2 0 0 1-2-2v-2"
+          />
+          <circle
+            cx="12"
+            cy="12"
+            r="3"
+          />
+          <path
+            d="m16 16-1.9-1.9"
+          />
+        </svg>
+      </div>
+      <div>
+        <p
+          class="font-medium text-purple-600 dark:text-purple-400"
+          data-testid="progress-stage"
+        >
+          Analyzing Content
+        </p>
+      </div>
+    </div>
+    <div
+      class="text-right"
+    >
+      <span
+        class="text-2xl font-bold tabular-nums text-purple-600 dark:text-purple-400"
+      >
+        50
+      </span>
+      <span
+        class="text-sm text-purple-500"
+      >
+        %
+      </span>
+    </div>
+  </div>
+  <div
+    class="space-y-1.5"
+  >
+    <div
+      aria-valuemax="100"
+      aria-valuemin="0"
+      class="relative w-full overflow-hidden rounded-full bg-primary/20 h-2"
+      data-max="100"
+      data-state="indeterminate"
+      data-testid="progress-bar"
+      role="progressbar"
+    >
+      <div
+        class="h-full w-full flex-1 bg-primary transition-all"
+        data-max="100"
+        data-state="indeterminate"
+        style="transform: translateX(-50%);"
+      />
+    </div>
+    <div
+      class="flex justify-between text-xs text-muted-foreground pt-1"
+    >
+      <span>
+        Upload
+      </span>
+      <span>
+        Preprocess
+      </span>
+      <span>
+        Analyze
+      </span>
+      <span>
+        Score
+      </span>
+      <span>
+        Complete
+      </span>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`ProgressIndicator > Snapshots > should match snapshot in analyzing state 1`] = `
+<div
+  aria-label="Analysis analyzing: 50%"
+  aria-live="polite"
+  class="rounded-lg border p-4 bg-purple-500/10 border-purple-500/30"
+  data-testid="progress-indicator"
+  role="status"
+>
+  <div
+    class="flex items-center justify-between mb-3"
+  >
+    <div
+      class="flex items-center gap-3"
+    >
+      <div
+        class="flex items-center justify-center w-10 h-10 rounded-full bg-purple-500/10 border border-purple-500/30"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-scan-search h-5 w-5 text-purple-500 animate-pulse"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M3 7V5a2 2 0 0 1 2-2h2"
+          />
+          <path
+            d="M17 3h2a2 2 0 0 1 2 2v2"
+          />
+          <path
+            d="M21 17v2a2 2 0 0 1-2 2h-2"
+          />
+          <path
+            d="M7 21H5a2 2 0 0 1-2-2v-2"
+          />
+          <circle
+            cx="12"
+            cy="12"
+            r="3"
+          />
+          <path
+            d="m16 16-1.9-1.9"
+          />
+        </svg>
+      </div>
+      <div>
+        <p
+          class="font-medium text-purple-600 dark:text-purple-400"
+          data-testid="progress-stage"
+        >
+          Analyzing Content
+        </p>
+        <p
+          class="text-sm text-muted-foreground mt-0.5"
+          data-testid="progress-message"
+        >
+          Analyzing content
+        </p>
+      </div>
+    </div>
+    <div
+      class="text-right"
+    >
+      <span
+        class="text-2xl font-bold tabular-nums text-purple-600 dark:text-purple-400"
+      >
+        50
+      </span>
+      <span
+        class="text-sm text-purple-500"
+      >
+        %
+      </span>
+    </div>
+  </div>
+  <div
+    class="space-y-1.5"
+  >
+    <div
+      aria-valuemax="100"
+      aria-valuemin="0"
+      class="relative w-full overflow-hidden rounded-full bg-primary/20 h-2"
+      data-max="100"
+      data-state="indeterminate"
+      data-testid="progress-bar"
+      role="progressbar"
+    >
+      <div
+        class="h-full w-full flex-1 bg-primary transition-all"
+        data-max="100"
+        data-state="indeterminate"
+        style="transform: translateX(-50%);"
+      />
+    </div>
+    <div
+      class="flex justify-between text-xs text-muted-foreground pt-1"
+    >
+      <span>
+        Upload
+      </span>
+      <span>
+        Preprocess
+      </span>
+      <span>
+        Analyze
+      </span>
+      <span>
+        Score
+      </span>
+      <span>
+        Complete
+      </span>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`ProgressIndicator > Snapshots > should match snapshot in compact mode 1`] = `
+<div
+  aria-live="polite"
+  class="flex items-center gap-2"
+  data-testid="progress-indicator"
+  role="status"
+>
+  <svg
+    aria-hidden="true"
+    class="lucide lucide-scan-search h-4 w-4 text-purple-500 animate-pulse"
+    fill="none"
+    height="24"
+    stroke="currentColor"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="2"
+    viewBox="0 0 24 24"
+    width="24"
+    xmlns="http://www.w3.org/2000/svg"
+  >
+    <path
+      d="M3 7V5a2 2 0 0 1 2-2h2"
+    />
+    <path
+      d="M17 3h2a2 2 0 0 1 2 2v2"
+    />
+    <path
+      d="M21 17v2a2 2 0 0 1-2 2h-2"
+    />
+    <path
+      d="M7 21H5a2 2 0 0 1-2-2v-2"
+    />
+    <circle
+      cx="12"
+      cy="12"
+      r="3"
+    />
+    <path
+      d="m16 16-1.9-1.9"
+    />
+  </svg>
+  <span
+    class="text-sm text-purple-600 dark:text-purple-400"
+  >
+    Analyzing Content
+  </span>
+  <span
+    class="text-sm text-muted-foreground"
+  >
+    60
+    %
+  </span>
+</div>
+`;
+
+exports[`ProgressIndicator > Snapshots > should match snapshot in completed state 1`] = `
+<div
+  aria-label="Analysis completed: 100%"
+  aria-live="polite"
+  class="rounded-lg border p-4 bg-green-500/10 border-green-500/30"
+  data-testid="progress-indicator"
+  role="status"
+>
+  <div
+    class="flex items-center justify-between mb-3"
+  >
+    <div
+      class="flex items-center gap-3"
+    >
+      <div
+        class="flex items-center justify-center w-10 h-10 rounded-full bg-green-500/10 border border-green-500/30"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-circle-check h-5 w-5 text-green-500"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <circle
+            cx="12"
+            cy="12"
+            r="10"
+          />
+          <path
+            d="m9 12 2 2 4-4"
+          />
+        </svg>
+      </div>
+      <div>
+        <p
+          class="font-medium text-green-600 dark:text-green-400"
+          data-testid="progress-stage"
+        >
+          Analysis Complete
+        </p>
+      </div>
+    </div>
+    <div
+      class="text-right"
+    >
+      <span
+        class="text-2xl font-bold tabular-nums text-green-600 dark:text-green-400"
+      >
+        100
+      </span>
+      <span
+        class="text-sm text-green-500"
+      >
+        %
+      </span>
+    </div>
+  </div>
+  <div
+    class="space-y-1.5"
+  >
+    <div
+      aria-valuemax="100"
+      aria-valuemin="0"
+      class="relative w-full overflow-hidden rounded-full bg-primary/20 h-2"
+      data-max="100"
+      data-state="indeterminate"
+      data-testid="progress-bar"
+      role="progressbar"
+    >
+      <div
+        class="h-full w-full flex-1 bg-primary transition-all"
+        data-max="100"
+        data-state="indeterminate"
+        style="transform: translateX(-0%);"
+      />
+    </div>
+    <div
+      class="flex justify-between text-xs text-muted-foreground pt-1"
+    >
+      <span>
+        Upload
+      </span>
+      <span>
+        Preprocess
+      </span>
+      <span>
+        Analyze
+      </span>
+      <span>
+        Score
+      </span>
+      <span>
+        Complete
+      </span>
+    </div>
+  </div>
+  <div
+    class="mt-3 flex items-center gap-2 text-green-600 dark:text-green-400 text-sm"
+  >
+    <svg
+      aria-hidden="true"
+      class="lucide lucide-circle-check h-4 w-4"
+      fill="none"
+      height="24"
+      stroke="currentColor"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="2"
+      viewBox="0 0 24 24"
+      width="24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="10"
+      />
+      <path
+        d="m9 12 2 2 4-4"
+      />
+    </svg>
+    <span>
+      Analysis complete - results ready
+    </span>
+  </div>
+</div>
+`;
+
+exports[`ProgressIndicator > Snapshots > should match snapshot in failed state 1`] = `
+<div
+  aria-label="Analysis failed: 0%"
+  aria-live="polite"
+  class="rounded-lg border p-4 bg-destructive/10 border-destructive/30"
+  data-testid="progress-indicator"
+  role="status"
+>
+  <div
+    class="flex items-center justify-between mb-3"
+  >
+    <div
+      class="flex items-center gap-3"
+    >
+      <div
+        class="flex items-center justify-center w-10 h-10 rounded-full bg-destructive/10 border border-destructive/30"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-circle-x h-5 w-5 text-destructive"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <circle
+            cx="12"
+            cy="12"
+            r="10"
+          />
+          <path
+            d="m15 9-6 6"
+          />
+          <path
+            d="m9 9 6 6"
+          />
+        </svg>
+      </div>
+      <div>
+        <p
+          class="font-medium text-destructive"
+          data-testid="progress-stage"
+        >
+          Analysis Failed
+        </p>
+      </div>
+    </div>
+    <div
+      class="text-right"
+    >
+      <span
+        class="text-2xl font-bold tabular-nums text-destructive"
+      >
+        0
+      </span>
+      <span
+        class="text-sm text-destructive"
+      >
+        %
+      </span>
+    </div>
+  </div>
+  <div
+    class="space-y-1.5"
+  >
+    <div
+      aria-valuemax="100"
+      aria-valuemin="0"
+      class="relative w-full overflow-hidden rounded-full bg-primary/20 h-2 [&>div]:bg-destructive"
+      data-max="100"
+      data-state="indeterminate"
+      data-testid="progress-bar"
+      role="progressbar"
+    >
+      <div
+        class="h-full w-full flex-1 bg-primary transition-all"
+        data-max="100"
+        data-state="indeterminate"
+        style="transform: translateX(-100%);"
+      />
+    </div>
+    <div
+      class="flex justify-between text-xs text-muted-foreground pt-1"
+    >
+      <span>
+        Upload
+      </span>
+      <span>
+        Preprocess
+      </span>
+      <span>
+        Analyze
+      </span>
+      <span>
+        Score
+      </span>
+      <span>
+        Complete
+      </span>
+    </div>
+  </div>
+  <div
+    class="mt-3 flex items-start gap-2 p-2 rounded bg-destructive/10 text-destructive text-sm"
+    role="alert"
+  >
+    <svg
+      aria-hidden="true"
+      class="lucide lucide-circle-alert h-4 w-4 mt-0.5 flex-shrink-0"
+      fill="none"
+      height="24"
+      stroke="currentColor"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="2"
+      viewBox="0 0 24 24"
+      width="24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="10"
+      />
+      <line
+        x1="12"
+        x2="12"
+        y1="8"
+        y2="12"
+      />
+      <line
+        x1="12"
+        x2="12.01"
+        y1="16"
+        y2="16"
+      />
+    </svg>
+    <div>
+      <p
+        class="font-medium"
+      >
+        Analysis Failed
+      </p>
+      <p
+        class="text-destructive/80"
+      >
+        Analysis failed
+      </p>
+      <p
+        class="text-xs text-destructive/60 mt-1"
+      >
+        Error code: 
+        ERR_001
+      </p>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`ProgressIndicator > Snapshots > should match snapshot in pending state 1`] = `
+<div
+  aria-label="Analysis pending: 5%"
+  aria-live="polite"
+  class="rounded-lg border p-4 bg-muted/50 border-muted"
+  data-testid="progress-indicator"
+  role="status"
+>
+  <div
+    class="flex items-center justify-between mb-3"
+  >
+    <div
+      class="flex items-center gap-3"
+    >
+      <div
+        class="flex items-center justify-center w-10 h-10 rounded-full bg-muted/50 border border-muted"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-clock h-5 w-5 text-muted-foreground animate-pulse"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M12 6v6l4 2"
+          />
+          <circle
+            cx="12"
+            cy="12"
+            r="10"
+          />
+        </svg>
+      </div>
+      <div>
+        <p
+          class="font-medium text-muted-foreground"
+          data-testid="progress-stage"
+        >
+          Pending
+        </p>
+      </div>
+    </div>
+    <div
+      class="text-right"
+    >
+      <span
+        class="text-2xl font-bold tabular-nums text-muted-foreground"
+      >
+        5
+      </span>
+      <span
+        class="text-sm text-muted-foreground"
+      >
+        %
+      </span>
+    </div>
+  </div>
+  <div
+    class="space-y-1.5"
+  >
+    <div
+      aria-valuemax="100"
+      aria-valuemin="0"
+      class="relative w-full overflow-hidden rounded-full bg-primary/20 h-2"
+      data-max="100"
+      data-state="indeterminate"
+      data-testid="progress-bar"
+      role="progressbar"
+    >
+      <div
+        class="h-full w-full flex-1 bg-primary transition-all"
+        data-max="100"
+        data-state="indeterminate"
+        style="transform: translateX(-95%);"
+      />
+    </div>
+    <div
+      class="flex justify-between text-xs text-muted-foreground pt-1"
+    >
+      <span>
+        Upload
+      </span>
+      <span>
+        Preprocess
+      </span>
+      <span>
+        Analyze
+      </span>
+      <span>
+        Score
+      </span>
+      <span>
+        Complete
+      </span>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`ProgressIndicatorSkeleton > should match snapshot 1`] = `
+<div
+  class="rounded-lg border p-4 bg-muted/30 animate-pulse"
+  data-testid="progress-indicator-skeleton"
+>
+  <div
+    class="flex items-center justify-between mb-3"
+  >
+    <div
+      class="flex items-center gap-3"
+    >
+      <div
+        class="w-10 h-10 rounded-full bg-muted"
+      />
+      <div
+        class="space-y-1.5"
+      >
+        <div
+          class="h-4 w-24 bg-muted rounded"
+        />
+        <div
+          class="h-3 w-32 bg-muted rounded"
+        />
+      </div>
+    </div>
+    <div
+      class="h-8 w-12 bg-muted rounded"
+    />
+  </div>
+  <div
+    class="h-2 w-full bg-muted rounded-full"
+  />
+</div>
+`;
