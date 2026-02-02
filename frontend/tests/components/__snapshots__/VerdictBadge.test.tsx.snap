@@ -1,0 +1,133 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`VerdictBadge > Snapshots > should match snapshot for authentic verdict 1`] = `
+<div
+  aria-label="Verdict: Authentic. High confidence authentic content"
+  class="inline-flex flex-col gap-1.5"
+  data-testid="verdict-badge"
+  role="status"
+>
+  <div
+    class="inline-flex items-center rounded-md focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 font-semibold border transition-all duration-300 text-sm px-3 py-1 gap-1.5 bg-green-50 dark:bg-green-950/50 border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 hover:ring-2 ring-green-500/30"
+  >
+    <svg
+      aria-hidden="true"
+      class="lucide lucide-shield-check h-4 w-4 flex-shrink-0"
+      data-testid="verdict-badge-icon"
+      fill="none"
+      height="24"
+      stroke="currentColor"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="2"
+      viewBox="0 0 24 24"
+      width="24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"
+      />
+      <path
+        d="m9 12 2 2 4-4"
+      />
+    </svg>
+    <span
+      data-testid="verdict-badge-label"
+    >
+      Authentic
+    </span>
+  </div>
+</div>
+`;
+
+exports[`VerdictBadge > Snapshots > should match snapshot for fake verdict 1`] = `
+<div
+  aria-label="Verdict: Fake. High confidence manipulated content"
+  class="inline-flex flex-col gap-1.5"
+  data-testid="verdict-badge"
+  role="status"
+>
+  <div
+    class="inline-flex items-center rounded-md focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 font-semibold border transition-all duration-300 text-sm px-3 py-1 gap-1.5 bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 hover:ring-2 ring-red-500/30"
+  >
+    <svg
+      aria-hidden="true"
+      class="lucide lucide-octagon-x h-4 w-4 flex-shrink-0"
+      data-testid="verdict-badge-icon"
+      fill="none"
+      height="24"
+      stroke="currentColor"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="2"
+      viewBox="0 0 24 24"
+      width="24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="m15 9-6 6"
+      />
+      <path
+        d="M2.586 16.726A2 2 0 0 1 2 15.312V8.688a2 2 0 0 1 .586-1.414l4.688-4.688A2 2 0 0 1 8.688 2h6.624a2 2 0 0 1 1.414.586l4.688 4.688A2 2 0 0 1 22 8.688v6.624a2 2 0 0 1-.586 1.414l-4.688 4.688a2 2 0 0 1-1.414.586H8.688a2 2 0 0 1-1.414-.586z"
+      />
+      <path
+        d="m9 9 6 6"
+      />
+    </svg>
+    <span
+      data-testid="verdict-badge-label"
+    >
+      Fake
+    </span>
+  </div>
+</div>
+`;
+
+exports[`VerdictBadge > Snapshots > should match snapshot with description 1`] = `
+<div
+  aria-label="Verdict: Uncertain. Analysis inconclusive - review recommended"
+  class="inline-flex flex-col gap-1.5"
+  data-testid="verdict-badge"
+  role="status"
+>
+  <div
+    class="inline-flex items-center rounded-md focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 font-semibold border transition-all duration-300 text-sm px-3 py-1 gap-1.5 bg-yellow-50 dark:bg-yellow-950/50 border-yellow-200 dark:border-yellow-800 text-yellow-700 dark:text-yellow-400 hover:ring-2 ring-yellow-500/30"
+  >
+    <svg
+      aria-hidden="true"
+      class="lucide lucide-triangle-alert h-4 w-4 flex-shrink-0"
+      data-testid="verdict-badge-icon"
+      fill="none"
+      height="24"
+      stroke="currentColor"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="2"
+      viewBox="0 0 24 24"
+      width="24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"
+      />
+      <path
+        d="M12 9v4"
+      />
+      <path
+        d="M12 17h.01"
+      />
+    </svg>
+    <span
+      data-testid="verdict-badge-label"
+    >
+      Uncertain
+    </span>
+  </div>
+  <p
+    class="text-muted-foreground text-sm"
+    data-testid="verdict-badge-description"
+  >
+    Analysis inconclusive - review recommended
+  </p>
+</div>
+`;
