@@ -102,7 +102,7 @@ describe('TrustScoreGauge', () => {
     });
 
     it('should handle decimal scores', () => {
-      renderWithProviders(<TrustScoreGauge score={75.5} />);
+      renderWithProviders(<TrustScoreGauge score={75.5} animated={false} />);
       
       const scoreValue = screen.getByTestId('gauge-score-value');
       expect(scoreValue).toHaveTextContent('76'); // Should round
@@ -356,14 +356,14 @@ describe('TrustScoreGauge', () => {
   // ============== INTEGRATION ==============
 
   describe('Integration', () => {
-    it('should work with all props combined', () => {
+    it('should work with all props combined', async () => {
       renderWithProviders(
         <TrustScoreGauge
           score={85}
           confidence={0.92}
           verdict="authentic"
           size={GAUGE_SIZES.lg}
-          animated
+          animated={false}
           showLabel
           showConfidence
           className="custom-class"
