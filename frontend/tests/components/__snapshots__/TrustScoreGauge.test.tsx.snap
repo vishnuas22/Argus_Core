@@ -2,7 +2,7 @@
 
 exports[`TrustScoreGauge > Snapshots > should match snapshot for authentic score 1`] = `
 <div
-  aria-label="Trust Score: 90 out of 100"
+  aria-label="Trust Score: 90 out of 100, authentic"
   class="relative inline-flex items-center justify-center"
   data-testid="trust-score-gauge"
   role="img"
@@ -151,7 +151,7 @@ exports[`TrustScoreGauge > Snapshots > should match snapshot for authentic score
 
 exports[`TrustScoreGauge > Snapshots > should match snapshot for deepfake score 1`] = `
 <div
-  aria-label="Trust Score: 20 out of 100"
+  aria-label="Trust Score: 20 out of 100, deepfake"
   class="relative inline-flex items-center justify-center"
   data-testid="trust-score-gauge"
   role="img"
@@ -299,7 +299,7 @@ exports[`TrustScoreGauge > Snapshots > should match snapshot for deepfake score 
 
 exports[`TrustScoreGauge > Snapshots > should match snapshot for uncertain score 1`] = `
 <div
-  aria-label="Trust Score: 50 out of 100"
+  aria-label="Trust Score: 50 out of 100, uncertain"
   class="relative inline-flex items-center justify-center"
   data-testid="trust-score-gauge"
   role="img"
