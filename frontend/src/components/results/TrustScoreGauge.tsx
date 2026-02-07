@@ -104,9 +104,16 @@ export function TrustScoreGauge({
   className,
   animationDuration = 1000,
 }: TrustScoreGaugeProps) {
+  // Clamp and sanitize score
+  const clampedScore = useMemo(() => {
+    if (isNaN(score)) return 0;
+    if (!isFinite(score)) return score > 0 ? 100 : 0;
+    return Math.max(0, Math.min(100, Math.round(score)));
+  }, [score]);
+
   const svgRef = useRef<SVGSVGElement>(null);
   const gaugeRef = useRef<GaugeInstance | null>(null);
-  const [displayScore, setDisplayScore] = useState(animated ? 0 : score);
+  const [displayScore, setDisplayScore] = useState(animated ? 0 : clampedScore);
   const [isInitialized, setIsInitialized] = useState(false);
 
   // Calculate dimensions
@@ -115,15 +122,15 @@ export function TrustScoreGauge({
 
   // Get colors
   const scoreColor = useMemo(() => {
-    return verdict ? getVerdictColor(verdict) : getScoreColor(score);
-  }, [score, verdict]);
+    return verdict ? getVerdictColor(verdict) : getScoreColor(clampedScore);
+  }, [clampedScore, verdict]);
 
   // Initialize D3 gauge
   useEffect(() => {
     if (!svgRef.current) return;
 
     // Create gauge instance
-    gaugeRef.current = createGauge(svgRef.current, score, {
+    gaugeRef.current = createGauge(svgRef.current, clampedScore, {
       width: size,
       height: size,
       innerRadius,
@@ -142,7 +149,7 @@ export function TrustScoreGauge({
         const progress = Math.min(elapsed / animationDuration, 1);
         // Ease out elastic
         const eased = 1 - Math.pow(1 - progress, 3);
-        setDisplayScore(Math.round(score * eased));
+        setDisplayScore(Math.round(clampedScore * eased));
         
         if (progress < 1) {
           requestAnimationFrame(animate);
@@ -161,7 +168,7 @@ export function TrustScoreGauge({
   useEffect(() => {
     if (!isInitialized || !gaugeRef.current) return;
 
-    gaugeRef.current.update(score, verdict);
+    gaugeRef.current.update(clampedScore, verdict);
 
     // Animate display score update
     if (animated) {
@@ -171,7 +178,7 @@ export function TrustScoreGauge({
         const elapsed = Date.now() - startTime;
         const progress = Math.min(elapsed / animationDuration, 1);
         const eased = 1 - Math.pow(1 - progress, 3);
-        setDisplayScore(Math.round(currentDisplay + (score - currentDisplay) * eased));
+        setDisplayScore(Math.round(currentDisplay + (clampedScore - currentDisplay) * eased));
         
         if (progress < 1) {
           requestAnimationFrame(animate);
@@ -179,9 +186,9 @@ export function TrustScoreGauge({
       };
       requestAnimationFrame(animate);
     } else {
-      setDisplayScore(score);
+      setDisplayScore(clampedScore);
     }
-  }, [score, verdict, isInitialized, animated]);
+  }, [clampedScore, verdict, isInitialized, animated]);
 
   // Calculate confidence ring dimensions
   const confidenceRingRadius = outerRadius + 12;
@@ -196,7 +203,7 @@ export function TrustScoreGauge({
       style={{ width: size, height: size }}
       data-testid="trust-score-gauge"
       role="img"
-      aria-label={`Trust Score: ${score} out of 100${confidence ? `, ${Math.round(confidence * 100)}% confidence` : ''}`}
+      aria-label={`Trust Score: ${clampedScore} out of 100${verdict ? `, ${verdict.replace('_', ' ')}` : ''}${confidence ? `, ${Math.round(confidence * 100)}% confidence` : ''}`}
     >
       {/* Main D3 Gauge SVG */}
       <svg
