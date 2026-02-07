@@ -202,9 +202,9 @@ export function ResultsPanel({
         className={cn('space-y-4', className)}
         data-testid="results-panel-failed"
       >
-        <Alert variant="destructive" data-testid="analysis-failed-alert">
+        <Alert variant="destructive">
           <XCircle className="h-4 w-4" />
-          <AlertTitle data-testid="failed-alert-title">Analysis Failed</AlertTitle>
+          <AlertTitle>Analysis Failed</AlertTitle>
           <AlertDescription className="mt-2">
             <p>
               {analysis?.explanation?.summary || 
@@ -607,6 +607,110 @@ function ResultsPanelContent({
   );
 }
 
+// ============== SCORE BREAKDOWN COMPONENT ==============
+
+/**
+ * Score Breakdown - Visual display of modality scores
+ */
+function ScoreBreakdown({ breakdown }: { breakdown: ScoreBreakdownType }) {
+  const scores = useMemo(() => {
+    const items: Array<{ label: string; score: number; weight: number; key: string }> = [];
+    
+    if (breakdown.video_spatial !== undefined) {
+      items.push({ 
+        label: 'Video (Spatial)', 
+        score: breakdown.video_spatial * 100, 
+        weight: breakdown.weights?.video_spatial || 0.3,
+        key: 'video_spatial'
+      });
+    }
+    if (breakdown.video_temporal !== undefined) {
+      items.push({ 
+        label: 'Video (Temporal)', 
+        score: breakdown.video_temporal * 100, 
+        weight: breakdown.weights?.video_temporal || 0.25,
+        key: 'video_temporal'
+      });
+    }
+    if (breakdown.video_lipsync !== undefined) {
+      items.push({ 
+        label: 'Lip Sync', 
+        score: breakdown.video_lipsync * 100, 
+        weight: breakdown.weights?.video_lipsync || 0.1,
+        key: 'video_lipsync'
+      });
+    }
+    if (breakdown.audio !== undefined) {
+      items.push({ 
+        label: 'Audio Analysis', 
+        score: breakdown.audio * 100, 
+        weight: breakdown.weights?.audio || 0.2,
+        key: 'audio'
+      });
+    }
+    if (breakdown.text !== undefined) {
+      items.push({ 
+        label: 'Text Analysis', 
+        score: breakdown.text * 100, 
+        weight: breakdown.weights?.text || 0.1,
+        key: 'text'
+      });
+    }
+    if (breakdown.metadata !== undefined) {
+      items.push({ 
+        label: 'Metadata', 
+        score: breakdown.metadata * 100, 
+        weight: breakdown.weights?.metadata || 0.15,
+        key: 'metadata'
+      });
+    }
+
+    return items;
+  }, [breakdown]);
+
+  if (scores.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground text-center py-4">
+        No detailed scores available
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {scores.map(({ label, score, weight, key }) => (
+        <div key={key} className="space-y-1.5">
+          <div className="flex items-center justify-between text-sm">
+            <span className="font-medium">{label}</span>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="text-xs">
+                {(weight * 100).toFixed(0)}% weight
+              </Badge>
+              <span 
+                className={cn(
+                  'font-semibold tabular-nums',
+                  getScoreTextColor(score)
+                )}
+              >
+                {score.toFixed(0)}
+              </span>
+            </div>
+          </div>
+          <div className="h-2 bg-muted rounded-full overflow-hidden">
+            <div 
+              className={cn(
+                'h-full rounded-full transition-all duration-700 ease-out',
+                getScoreBarColor(score)
+              )}
+              style={{ width: `${Math.min(100, Math.max(0, score))}%` }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ============== SKELETON COMPONENT ==============
 
 /**
@@ -670,7 +774,7 @@ export function ResultsPanelSkeleton({
         {/* Right Column */}
         <div className="lg:col-span-2 space-y-4">
           {showExplanation && (
-            <Card data-testid="explanation-skeleton">
+            <Card>
               <CardHeader className="pb-3">
                 <Skeleton className="h-6 w-40" />
               </CardHeader>
@@ -688,7 +792,7 @@ export function ResultsPanelSkeleton({
           )}
 
           {showBreakdown && (
-            <Card data-testid="breakdown-skeleton">
+            <Card>
               <CardHeader className="pb-3">
                 <Skeleton className="h-6 w-36" />
               </CardHeader>
