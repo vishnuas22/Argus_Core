@@ -229,14 +229,12 @@ describe('VerdictBadge', () => {
       );
       
       let icon = screen.getByTestId('verdict-badge-icon');
-      let iconSvg = icon.querySelector('svg');
-      expect(iconSvg).toHaveClass('h-3');
+      expect(icon).toHaveClass('h-3');
       
       rerender(<VerdictBadge verdict="authentic" size="lg" />);
       
       icon = screen.getByTestId('verdict-badge-icon');
-      iconSvg = icon.querySelector('svg');
-      expect(iconSvg).toHaveClass('h-5');
+      expect(icon).toHaveClass('h-5');
     });
   });
 
@@ -247,63 +245,46 @@ describe('VerdictBadge', () => {
       renderWithProviders(<VerdictBadge verdict="authentic" />);
       
       const badge = screen.getByTestId('verdict-badge');
-      const className = badge.className;
+      const badgeElement = badge.querySelector('[class*="bg-green"]');
       
       // Should contain green-related classes
-      expect(
-        className.includes('green') || 
-        className.includes('emerald') ||
-        className.includes('bg-green') ||
-        className.includes('text-green')
-      ).toBe(true);
+      expect(badgeElement).toBeInTheDocument();
     });
 
     it('should use lime/green colors for likely_authentic', () => {
       renderWithProviders(<VerdictBadge verdict="likely_authentic" />);
       
       const badge = screen.getByTestId('verdict-badge');
-      const className = badge.className;
+      const badgeElement = badge.querySelector('[class*="bg-lime"]');
       
-      expect(
-        className.includes('lime') || 
-        className.includes('green')
-      ).toBe(true);
+      expect(badgeElement).toBeInTheDocument();
     });
 
     it('should use yellow colors for uncertain', () => {
       renderWithProviders(<VerdictBadge verdict="uncertain" />);
       
       const badge = screen.getByTestId('verdict-badge');
-      const className = badge.className;
+      const badgeElement = badge.querySelector('[class*="bg-yellow"]');
       
-      expect(
-        className.includes('yellow') || 
-        className.includes('amber')
-      ).toBe(true);
+      expect(badgeElement).toBeInTheDocument();
     });
 
     it('should use orange colors for likely_fake', () => {
       renderWithProviders(<VerdictBadge verdict="likely_fake" />);
       
       const badge = screen.getByTestId('verdict-badge');
-      const className = badge.className;
+      const badgeElement = badge.querySelector('[class*="bg-orange"]');
       
-      expect(
-        className.includes('orange') || 
-        className.includes('amber')
-      ).toBe(true);
+      expect(badgeElement).toBeInTheDocument();
     });
 
     it('should use red colors for fake', () => {
       renderWithProviders(<VerdictBadge verdict="fake" />);
       
       const badge = screen.getByTestId('verdict-badge');
-      const className = badge.className;
+      const badgeElement = badge.querySelector('[class*="bg-red"]');
       
-      expect(
-        className.includes('red') || 
-        className.includes('rose')
-      ).toBe(true);
+      expect(badgeElement).toBeInTheDocument();
     });
   });
 
@@ -362,13 +343,13 @@ describe('VerdictBadge', () => {
 
     it('should respect prefers-reduced-motion', () => {
       // Mock prefers-reduced-motion media query
-      window.matchMedia = jest.fn().mockImplementation(query => ({
+      window.matchMedia = vi.fn().mockImplementation(query => ({
         matches: query === '(prefers-reduced-motion: reduce)',
         media: query,
         onchange: null,
-        addEventListener: jest.fn(),
-        removeEventListener: jest.fn(),
-        dispatchEvent: jest.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
       })) as any;
 
       renderWithProviders(<VerdictBadge verdict="authentic" animated />);
