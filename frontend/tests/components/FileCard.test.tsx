@@ -211,7 +211,8 @@ describe('FileCard', () => {
       const video = preview.querySelector('video');
       expect(video).toBeInTheDocument();
       expect(video).toHaveAttribute('src', mockPreview);
-      expect(video).toHaveAttribute('muted');
+      // Check for muted attribute (in jsdom, it might be a property rather than attribute)
+      expect(video?.hasAttribute('muted') || video?.muted).toBeTruthy();
     });
 
     it('should show icon fallback for audio files', () => {
