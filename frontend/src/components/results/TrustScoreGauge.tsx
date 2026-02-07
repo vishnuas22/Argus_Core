@@ -113,12 +113,19 @@ export function TrustScoreGauge({
 
   const svgRef = useRef<SVGSVGElement>(null);
   const gaugeRef = useRef<GaugeInstance | null>(null);
-  const [displayScore, setDisplayScore] = useState(animated ? 0 : clampedScore);
+  const [displayScore, setDisplayScore] = useState(clampedScore);
   const [isInitialized, setIsInitialized] = useState(false);
 
   // Calculate dimensions
   const innerRadius = size * 0.3;
   const outerRadius = size * 0.425;
+
+  // Update displayScore immediately if not animated
+  useEffect(() => {
+    if (!animated) {
+      setDisplayScore(clampedScore);
+    }
+  }, [clampedScore, animated]);
 
   // Get colors
   const scoreColor = useMemo(() => {
@@ -156,6 +163,9 @@ export function TrustScoreGauge({
         }
       };
       requestAnimationFrame(animate);
+    } else {
+      // For non-animated mode (e.g., tests), set immediately
+      setDisplayScore(clampedScore);
     }
 
     return () => {
