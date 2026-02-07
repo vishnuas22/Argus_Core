@@ -1,0 +1,466 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`FileCard > Snapshots > should match snapshot in default state 1`] = `
+<div
+  class="relative flex items-start gap-4 p-4 rounded-lg border bg-card transition-all duration-200 border-border"
+  data-testid="file-card"
+>
+  <div
+    class="relative flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden bg-muted flex items-center justify-center"
+    data-testid="file-card-preview"
+  >
+    <div
+      class="flex flex-col items-center gap-1"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-file-play text-blue-500 h-8 w-8"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"
+        />
+        <path
+          d="M14 2v5a1 1 0 0 0 1 1h5"
+        />
+        <path
+          d="M15.033 13.44a.647.647 0 0 1 0 1.12l-4.065 2.352a.645.645 0 0 1-.968-.56v-4.704a.645.645 0 0 1 .967-.56z"
+        />
+      </svg>
+      <span
+        class="text-[10px] font-medium text-muted-foreground uppercase"
+      >
+        MP4
+      </span>
+    </div>
+    <div
+      class="absolute bottom-1 right-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-black/60 text-white uppercase"
+    >
+      video
+    </div>
+  </div>
+  <div
+    class="flex-1 min-w-0 space-y-2"
+  >
+    <div
+      class="flex items-start justify-between gap-2"
+    >
+      <div
+        class="min-w-0"
+      >
+        <h4
+          class="font-medium text-sm truncate text-foreground"
+          title="test-video.mp4"
+        >
+          test-video.mp4
+        </h4>
+        <p
+          class="text-xs text-muted-foreground"
+        >
+          10 MB
+           • 
+          video/mp4
+        </p>
+      </div>
+      <button
+        aria-label="Remove test-video.mp4"
+        class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 hover:bg-accent h-7 w-7 flex-shrink-0 text-muted-foreground hover:text-foreground"
+        data-testid="file-card-remove"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-x h-4 w-4"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M18 6 6 18"
+          />
+          <path
+            d="m6 6 12 12"
+          />
+        </svg>
+      </button>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`FileCard > Snapshots > should match snapshot with error 1`] = `
+<div
+  class="relative flex items-start gap-4 p-4 rounded-lg border transition-all duration-200 border-destructive bg-destructive/5"
+  data-testid="file-card"
+>
+  <div
+    class="relative flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden bg-muted flex items-center justify-center"
+    data-testid="file-card-preview"
+  >
+    <div
+      class="flex flex-col items-center gap-1"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-file-play text-blue-500 h-8 w-8"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"
+        />
+        <path
+          d="M14 2v5a1 1 0 0 0 1 1h5"
+        />
+        <path
+          d="M15.033 13.44a.647.647 0 0 1 0 1.12l-4.065 2.352a.645.645 0 0 1-.968-.56v-4.704a.645.645 0 0 1 .967-.56z"
+        />
+      </svg>
+      <span
+        class="text-[10px] font-medium text-muted-foreground uppercase"
+      >
+        MP4
+      </span>
+    </div>
+    <div
+      class="absolute bottom-1 right-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-black/60 text-white uppercase"
+    >
+      video
+    </div>
+  </div>
+  <div
+    class="flex-1 min-w-0 space-y-2"
+  >
+    <div
+      class="flex items-start justify-between gap-2"
+    >
+      <div
+        class="min-w-0"
+      >
+        <h4
+          class="font-medium text-sm truncate text-foreground"
+          title="test-video.mp4"
+        >
+          test-video.mp4
+        </h4>
+        <p
+          class="text-xs text-muted-foreground"
+        >
+          10 MB
+           • 
+          video/mp4
+        </p>
+      </div>
+      <button
+        aria-label="Remove test-video.mp4"
+        class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 hover:bg-accent h-7 w-7 flex-shrink-0 text-muted-foreground hover:text-foreground"
+        data-testid="file-card-remove"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-x h-4 w-4"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M18 6 6 18"
+          />
+          <path
+            d="m6 6 12 12"
+          />
+        </svg>
+      </button>
+    </div>
+    <div
+      class="flex items-center gap-1.5 text-xs text-destructive"
+      role="alert"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-circle-alert h-3.5 w-3.5 flex-shrink-0"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <circle
+          cx="12"
+          cy="12"
+          r="10"
+        />
+        <line
+          x1="12"
+          x2="12"
+          y1="8"
+          y2="12"
+        />
+        <line
+          x1="12"
+          x2="12.01"
+          y1="16"
+          y2="16"
+        />
+      </svg>
+      <span>
+        Validation error
+      </span>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`FileCard > Snapshots > should match snapshot with preview 1`] = `
+<div
+  class="relative flex items-start gap-4 p-4 rounded-lg border bg-card transition-all duration-200 border-border"
+  data-testid="file-card"
+>
+  <div
+    class="relative flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden bg-muted flex items-center justify-center"
+    data-testid="file-card-preview"
+  >
+    <video
+      class="w-full h-full object-cover"
+      playsinline=""
+      src="blob:http://localhost/test-preview"
+    />
+    <div
+      class="absolute bottom-1 right-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-black/60 text-white uppercase"
+    >
+      video
+    </div>
+  </div>
+  <div
+    class="flex-1 min-w-0 space-y-2"
+  >
+    <div
+      class="flex items-start justify-between gap-2"
+    >
+      <div
+        class="min-w-0"
+      >
+        <h4
+          class="font-medium text-sm truncate text-foreground"
+          title="test-video.mp4"
+        >
+          test-video.mp4
+        </h4>
+        <p
+          class="text-xs text-muted-foreground"
+        >
+          10 MB
+           • 
+          video/mp4
+        </p>
+      </div>
+      <button
+        aria-label="Remove test-video.mp4"
+        class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 hover:bg-accent h-7 w-7 flex-shrink-0 text-muted-foreground hover:text-foreground"
+        data-testid="file-card-remove"
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-x h-4 w-4"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M18 6 6 18"
+          />
+          <path
+            d="m6 6 12 12"
+          />
+        </svg>
+      </button>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`FileCard > Snapshots > should match snapshot with upload progress 1`] = `
+<div
+  class="relative flex items-start gap-4 p-4 rounded-lg border bg-card transition-all duration-200 border-border"
+  data-testid="file-card"
+>
+  <div
+    class="relative flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden bg-muted flex items-center justify-center"
+    data-testid="file-card-preview"
+  >
+    <div
+      class="flex flex-col items-center gap-1"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-file-play text-blue-500 h-8 w-8"
+        fill="none"
+        height="24"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="24"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"
+        />
+        <path
+          d="M14 2v5a1 1 0 0 0 1 1h5"
+        />
+        <path
+          d="M15.033 13.44a.647.647 0 0 1 0 1.12l-4.065 2.352a.645.645 0 0 1-.968-.56v-4.704a.645.645 0 0 1 .967-.56z"
+        />
+      </svg>
+      <span
+        class="text-[10px] font-medium text-muted-foreground uppercase"
+      >
+        MP4
+      </span>
+    </div>
+    <div
+      class="absolute bottom-1 right-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-black/60 text-white uppercase"
+    >
+      video
+    </div>
+  </div>
+  <div
+    class="flex-1 min-w-0 space-y-2"
+  >
+    <div
+      class="flex items-start justify-between gap-2"
+    >
+      <div
+        class="min-w-0"
+      >
+        <h4
+          class="font-medium text-sm truncate text-foreground"
+          title="test-video.mp4"
+        >
+          test-video.mp4
+        </h4>
+        <p
+          class="text-xs text-muted-foreground"
+        >
+          10 MB
+           • 
+          video/mp4
+        </p>
+      </div>
+      <button
+        aria-label="Remove test-video.mp4"
+        class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 hover:bg-accent h-7 w-7 flex-shrink-0 text-muted-foreground hover:text-foreground"
+        data-testid="file-card-remove"
+        disabled=""
+      >
+        <svg
+          aria-hidden="true"
+          class="lucide lucide-x h-4 w-4"
+          fill="none"
+          height="24"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          viewBox="0 0 24 24"
+          width="24"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <path
+            d="M18 6 6 18"
+          />
+          <path
+            d="m6 6 12 12"
+          />
+        </svg>
+      </button>
+    </div>
+    <div
+      class="space-y-1"
+    >
+      <div
+        aria-label="Upload progress"
+        aria-valuemax="100"
+        aria-valuemin="0"
+        class="relative w-full overflow-hidden rounded-full bg-primary/20 h-1.5"
+        data-max="100"
+        data-state="indeterminate"
+        role="progressbar"
+      >
+        <div
+          class="h-full w-full flex-1 bg-primary transition-all"
+          data-max="100"
+          data-state="indeterminate"
+          style="transform: translateX(-50%);"
+        />
+      </div>
+      <p
+        class="text-xs text-muted-foreground"
+      >
+        Uploading... 50%
+      </p>
+    </div>
+  </div>
+</div>
+`;
+
+exports[`FileCardSkeleton > should match snapshot 1`] = `
+<div
+  class="flex items-start gap-4 p-4 rounded-lg border bg-card animate-pulse"
+>
+  <div
+    class="flex-shrink-0 w-20 h-20 rounded-lg bg-muted"
+  />
+  <div
+    class="flex-1 space-y-2"
+  >
+    <div
+      class="h-4 w-3/4 bg-muted rounded"
+    />
+    <div
+      class="h-3 w-1/2 bg-muted rounded"
+    />
+    <div
+      class="h-1.5 w-full bg-muted rounded"
+    />
+  </div>
+</div>
+`;
