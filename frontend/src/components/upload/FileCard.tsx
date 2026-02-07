@@ -132,7 +132,7 @@ export function FileCard({
               <video
                 src={preview}
                 className="w-full h-full object-cover"
-                muted={true}
+                muted
                 playsInline
                 data-testid="file-card-video-preview"
               />
