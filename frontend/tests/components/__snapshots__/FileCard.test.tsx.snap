@@ -252,6 +252,7 @@ exports[`FileCard > Snapshots > should match snapshot with preview 1`] = `
   >
     <video
       class="w-full h-full object-cover"
+      data-testid="file-card-video-preview"
       playsinline=""
       src="blob:http://localhost/test-preview"
     />
