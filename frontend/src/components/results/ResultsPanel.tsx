@@ -778,7 +778,7 @@ export function ResultsPanelSkeleton({
               <CardHeader className="pb-3">
                 <Skeleton className="h-6 w-40" />
               </CardHeader>
-              <CardContent className="space-y-3">
+              <CardContent className="space-y-3" data-testid="explanation-skeleton">
                 <Skeleton className="h-4 w-full" />
                 <Skeleton className="h-4 w-5/6" />
                 <Skeleton className="h-4 w-4/6" />
@@ -796,7 +796,7 @@ export function ResultsPanelSkeleton({
               <CardHeader className="pb-3">
                 <Skeleton className="h-6 w-36" />
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-4" data-testid="breakdown-skeleton">
                 {[1, 2, 3].map((i) => (
                   <div key={i} className="space-y-2">
                     <div className="flex justify-between">
