@@ -454,8 +454,9 @@ describe('ScoreBreakdown Component', () => {
         />
       );
       
-      // Should show category labels
-      expect(screen.getByText(/video/i)).toBeInTheDocument();
+      // Should show category labels - use getAllByText for multiple matches
+      const videoLabels = screen.getAllByText(/video/i);
+      expect(videoLabels.length).toBeGreaterThan(0);
     });
   });
 
