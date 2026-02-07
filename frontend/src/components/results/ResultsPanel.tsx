@@ -729,7 +729,7 @@ export function ResultsPanelSkeleton({
 }) {
   if (variant === 'card') {
     return (
-      <Card className={className}>
+      <Card className={className} data-testid="results-panel-skeleton">
         <CardContent className="pt-6">
           <div className="flex items-center gap-4">
             <Skeleton className="h-20 w-20 rounded-full" />
@@ -745,7 +745,7 @@ export function ResultsPanelSkeleton({
 
   if (variant === 'compact') {
     return (
-      <div className={cn('space-y-4', className)}>
+      <div className={cn('space-y-4', className)} data-testid="results-panel-skeleton">
         <div className="flex items-center gap-6">
           <TrustScoreGaugeSkeleton size={120} />
           <VerdictBadgeSkeleton size="lg" />
