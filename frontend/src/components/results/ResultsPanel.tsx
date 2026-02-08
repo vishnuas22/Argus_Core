@@ -553,7 +553,7 @@ function ResultsPanelContent({
 
           {/* Score Breakdown */}
           {showBreakdown && trustScore?.breakdown && (
-            <Card>
+            <Card data-testid="score-breakdown">
               <CardHeader className="pb-3">
                 <CardTitle className="text-lg">Score Breakdown</CardTitle>
                 <CardDescription>
