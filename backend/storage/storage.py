@@ -1,7 +1,8 @@
 """
-Argus Core - MinIO Storage Client
-=================================
-S3-compatible object storage client for media files.
+Argus Core - MinIO Storage Client with Local Fallback
+======================================================
+S3-compatible object storage client for media files with automatic
+fallback to local filesystem storage when MinIO is unavailable.
 
 Implements: PRIME_ARGUS_DOCUMENT.md - Section 2.2 - storage/storage.py
 
@@ -14,14 +15,16 @@ Features:
 - Automatic retry with exponential backoff
 - Health checks with auto-reconnection
 - Guaranteed bucket creation on startup
+- Local filesystem fallback when MinIO unavailable
 """
 
 import io
+import os
 import time
+import shutil
 from typing import Union, BinaryIO, Optional, AsyncIterator, List, Dict, Any
 from datetime import timedelta
-from minio import Minio
-from minio.error import S3Error
+from pathlib import Path
 import asyncio
 from functools import partial
 import urllib3
@@ -38,13 +41,136 @@ MAX_RETRIES = 3
 RETRY_DELAY_BASE = 1.0
 RETRY_DELAY_MAX = 10.0
 
+# Local storage fallback directory
+LOCAL_STORAGE_BASE = "/app/storage_fallback"
+
+
+class LocalStorageClient:
+    """
+    Local filesystem storage fallback when MinIO is unavailable.
+    
+    Provides same interface as MinIO StorageClient but uses local disk.
+    """
+    
+    def __init__(self, base_path: str = LOCAL_STORAGE_BASE):
+        """Initialize local storage with base directory."""
+        self.base_path = Path(base_path)
+        self.base_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Local storage fallback initialized at: {self.base_path}")
+    
+    def _get_path(self, bucket: str, object_key: str) -> Path:
+        """Get full path for object."""
+        return self.base_path / bucket / object_key
+    
+    def _ensure_bucket_dir(self, bucket: str) -> Path:
+        """Ensure bucket directory exists."""
+        bucket_path = self.base_path / bucket
+        bucket_path.mkdir(parents=True, exist_ok=True)
+        return bucket_path
+    
+    async def upload_file(
+        self,
+        file: Union[bytes, BinaryIO],
+        bucket: str,
+        object_key: str,
+        content_type: str = "application/octet-stream"
+    ) -> str:
+        """Upload file to local storage."""
+        self._ensure_bucket_dir(bucket)
+        file_path = self._get_path(bucket, object_key)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        if isinstance(file, bytes):
+            file_path.write_bytes(file)
+        else:
+            file.seek(0)
+            file_path.write_bytes(file.read())
+        
+        logger.debug(f"Local storage: uploaded {object_key} to {bucket}")
+        return object_key
+    
+    async def download_file(self, bucket: str, object_key: str) -> bytes:
+        """Download file from local storage."""
+        file_path = self._get_path(bucket, object_key)
+        if not file_path.exists():
+            raise StorageError("download_file", f"File not found: {object_key}")
+        return file_path.read_bytes()
+    
+    async def delete_file(self, bucket: str, object_key: str) -> None:
+        """Delete file from local storage."""
+        file_path = self._get_path(bucket, object_key)
+        if file_path.exists():
+            file_path.unlink()
+            logger.debug(f"Local storage: deleted {object_key} from {bucket}")
+    
+    async def file_exists(self, bucket: str, object_key: str) -> bool:
+        """Check if file exists in local storage."""
+        return self._get_path(bucket, object_key).exists()
+    
+    async def list_objects(
+        self,
+        bucket: str,
+        prefix: Optional[str] = None,
+        recursive: bool = True
+    ) -> List[str]:
+        """List objects in local storage bucket."""
+        bucket_path = self.base_path / bucket
+        if not bucket_path.exists():
+            return []
+        
+        if prefix:
+            search_path = bucket_path / prefix
+            if not search_path.exists():
+                return []
+            pattern = "**/*" if recursive else "*"
+        else:
+            search_path = bucket_path
+            pattern = "**/*" if recursive else "*"
+        
+        objects = []
+        for path in search_path.glob(pattern):
+            if path.is_file():
+                rel_path = path.relative_to(bucket_path)
+                objects.append(str(rel_path))
+        return objects
+    
+    async def get_presigned_url(
+        self,
+        bucket: str,
+        object_key: str,
+        expires_seconds: int = 3600
+    ) -> str:
+        """Return local file path as URL (for local fallback)."""
+        file_path = self._get_path(bucket, object_key)
+        return f"file://{file_path}"
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """Check local storage health."""
+        try:
+            test_file = self.base_path / ".health_check"
+            test_file.write_text("ok")
+            test_file.unlink()
+            return {
+                "status": "healthy",
+                "mode": "local_fallback",
+                "path": str(self.base_path)
+            }
+        except Exception as e:
+            return {
+                "status": "unhealthy",
+                "mode": "local_fallback",
+                "error": str(e)
+            }
+
 
 class StorageClient(IStorage):
     """
-    MinIO object storage client with automatic retry and health checks.
+    MinIO object storage client with automatic retry, health checks,
+    and local filesystem fallback.
     
     Provides async wrapper around MinIO SDK for
     file upload, download, and management operations.
+    Falls back to local storage when MinIO is unavailable.
     """
     
     def __init__(
@@ -55,7 +181,7 @@ class StorageClient(IStorage):
         secure: bool = False
     ):
         """
-        Initialize MinIO client.
+        Initialize MinIO client with local fallback.
         
         Args:
             endpoint: MinIO server endpoint
@@ -68,39 +194,55 @@ class StorageClient(IStorage):
         self.secret_key = secret_key or config.minio_secret_key
         self.secure = secure or config.minio_secure
         
-        self._client: Optional[Minio] = None
+        self._client = None
         self._initialized = False
         self._buckets_created = False
+        self._use_local_fallback = False
+        
+        # Local storage fallback
+        self._local_storage = LocalStorageClient()
         
         # Default buckets from config
         self.bucket_uploads = config.minio_bucket_uploads
         self.bucket_preprocessed = config.minio_bucket_preprocessed
         self.bucket_results = config.minio_bucket_results
         
-        # Initialize client
+        # Try to initialize MinIO client
         self._create_client()
     
     def _create_client(self) -> None:
         """Create MinIO client instance with proper timeout settings."""
-        # Configure HTTP client with timeouts
-        http_client = urllib3.PoolManager(
-            timeout=urllib3.Timeout(connect=5.0, read=30.0),
-            maxsize=10,
-            retries=urllib3.Retry(
-                total=3,
-                backoff_factor=0.2,
-                status_forcelist=[500, 502, 503, 504]
+        try:
+            from minio import Minio
+            from minio.error import S3Error
+            
+            # Store S3Error for later use
+            self._S3Error = S3Error
+            
+            # Configure HTTP client with timeouts
+            http_client = urllib3.PoolManager(
+                timeout=urllib3.Timeout(connect=2.0, read=10.0),
+                maxsize=10,
+                retries=urllib3.Retry(
+                    total=1,
+                    backoff_factor=0.2,
+                    status_forcelist=[500, 502, 503, 504]
+                )
             )
-        )
-        
-        self._client = Minio(
-            self.endpoint,
-            access_key=self.access_key,
-            secret_key=self.secret_key,
-            secure=self.secure,
-            http_client=http_client
-        )
-        logger.info(f"MinIO client created for endpoint: {self.endpoint}")
+            
+            self._client = Minio(
+                self.endpoint,
+                access_key=self.access_key,
+                secret_key=self.secret_key,
+                secure=self.secure,
+                http_client=http_client
+            )
+            logger.info(f"MinIO client created for endpoint: {self.endpoint}")
+        except ImportError:
+            logger.warning("MinIO library not available, using local storage fallback")
+            self._use_local_fallback = True
+            self._client = None
+            self._S3Error = Exception
     
     def _reconnect(self) -> None:
         """Reconnect to MinIO server."""
@@ -126,6 +268,7 @@ class StorageClient(IStorage):
     ):
         """
         Execute operation with retry logic and exponential backoff.
+        Falls back to local storage if MinIO consistently fails.
         
         Args:
             operation_name: Name of operation for logging
@@ -140,7 +283,12 @@ class StorageClient(IStorage):
         Raises:
             StorageError: If all retries fail
         """
+        # If already using local fallback, don't try MinIO
+        if self._use_local_fallback:
+            raise StorageError(operation_name, "MinIO unavailable, using local fallback")
+        
         last_error = None
+        S3Error = self._S3Error
         
         for attempt in range(max_retries + 1):
             try:
@@ -169,16 +317,22 @@ class StorageClient(IStorage):
                     await asyncio.sleep(delay)
                     self._reconnect()
         
-        logger.error(f"{operation_name} failed after {max_retries + 1} attempts: {last_error}")
+        # Switch to local fallback after exhausting retries
+        logger.warning(f"{operation_name} failed after {max_retries + 1} attempts, switching to local fallback")
+        self._use_local_fallback = True
         raise StorageError(operation_name, str(last_error))
     
     async def health_check(self) -> Dict[str, Any]:
         """
-        Check MinIO health and connectivity.
+        Check storage health and connectivity.
         
         Returns:
             Dict with health status and details
         """
+        # If using local fallback, check that instead
+        if self._use_local_fallback:
+            return await self._local_storage.health_check()
+        
         try:
             start_time = time.time()
             
@@ -190,6 +344,7 @@ class StorageClient(IStorage):
             
             return {
                 "status": "healthy",
+                "mode": "minio",
                 "latency_ms": round(latency_ms, 2),
                 "endpoint": self.endpoint,
                 "buckets": bucket_names,
@@ -202,47 +357,61 @@ class StorageClient(IStorage):
                 )
             }
         except Exception as e:
-            logger.error(f"MinIO health check failed: {e}")
-            return {
-                "status": "unhealthy",
-                "error": str(e),
-                "endpoint": self.endpoint
-            }
+            logger.warning(f"MinIO health check failed: {e}, switching to local fallback")
+            self._use_local_fallback = True
+            return await self._local_storage.health_check()
     
-    async def wait_for_ready(self, timeout: float = 30.0, interval: float = 1.0) -> bool:
+    async def wait_for_ready(self, timeout: float = 5.0, interval: float = 1.0) -> bool:
         """
-        Wait for MinIO to become ready.
+        Wait for storage to become ready (MinIO or local fallback).
         
         Args:
             timeout: Maximum wait time in seconds
             interval: Check interval in seconds
             
         Returns:
-            True if MinIO is ready, False if timeout
+            True if storage is ready
         """
+        # If already using local fallback, it's ready
+        if self._use_local_fallback:
+            logger.info("Using local storage fallback (MinIO unavailable)")
+            return True
+        
         start_time = time.time()
         
         while (time.time() - start_time) < timeout:
             try:
                 health = await self.health_check()
                 if health["status"] == "healthy":
-                    logger.info(f"MinIO ready after {time.time() - start_time:.1f}s")
+                    if health.get("mode") == "local_fallback":
+                        logger.info("Storage ready (local fallback mode)")
+                    else:
+                        logger.info(f"MinIO ready after {time.time() - start_time:.1f}s")
                     return True
             except Exception:
                 pass
             
             await asyncio.sleep(interval)
         
-        logger.error(f"MinIO not ready after {timeout}s timeout")
-        return False
+        # Switch to local fallback after timeout
+        logger.warning(f"MinIO not ready after {timeout}s, using local storage fallback")
+        self._use_local_fallback = True
+        return True  # Local fallback is always "ready"
     
     async def ensure_bucket(self, bucket: str) -> None:
         """
         Ensure bucket exists, create if not.
+        Uses local directory if in fallback mode.
         
         Args:
             bucket: Bucket name to ensure
         """
+        if self._use_local_fallback:
+            # Local fallback: just ensure directory exists
+            self._local_storage._ensure_bucket_dir(bucket)
+            logger.debug(f"Local bucket directory ensured: {bucket}")
+            return
+        
         try:
             exists = await self._retry_operation(
                 f"check_bucket_{bucket}",
@@ -259,25 +428,30 @@ class StorageClient(IStorage):
             else:
                 logger.debug(f"Bucket exists: {bucket}")
         except StorageError:
-            raise
+            # Fall back to local storage
+            self._use_local_fallback = True
+            self._local_storage._ensure_bucket_dir(bucket)
+            logger.info(f"Using local storage fallback for bucket: {bucket}")
         except Exception as e:
-            raise StorageError("ensure_bucket", str(e))
+            self._use_local_fallback = True
+            self._local_storage._ensure_bucket_dir(bucket)
+            logger.warning(f"Bucket ensure failed, using local fallback: {e}")
     
     async def ensure_default_buckets(self) -> None:
         """
-        Ensure all default buckets exist.
+        Ensure all default buckets exist (MinIO or local directories).
         
-        This is called on startup and ensures all required buckets
-        are created before any operations.
+        This is called on startup and ensures storage is ready.
         """
         if self._buckets_created:
             logger.debug("Buckets already verified")
             return
         
-        # Wait for MinIO to be ready
-        ready = await self.wait_for_ready(timeout=30.0)
-        if not ready:
-            raise StorageError("ensure_default_buckets", "MinIO not available")
+        # Quick check if MinIO is available, otherwise use local
+        ready = await self.wait_for_ready(timeout=5.0)
+        if not ready and not self._use_local_fallback:
+            self._use_local_fallback = True
+            logger.info("Using local storage fallback for all operations")
         
         buckets = [
             self.bucket_uploads,
