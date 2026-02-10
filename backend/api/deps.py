@@ -19,6 +19,7 @@ for tests and consistent resource handling across all API endpoints.
 
 from typing import AsyncGenerator, Optional, TYPE_CHECKING
 from functools import lru_cache
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, Request, HTTPException, status
@@ -542,11 +543,15 @@ async def startup_dependencies() -> None:
     except Exception as e:
         logger.warning(f"Database connection failed (non-critical): {e}")
     
-    # Initialize storage
+    # Initialize storage (skip if MinIO not available)
     try:
         storage = get_storage_client()
-        await storage.ensure_default_buckets()
-        logger.info("Storage initialized")
+        # Run with timeout to avoid blocking if MinIO is down
+        try:
+            await asyncio.wait_for(storage.ensure_default_buckets(), timeout=3.0)
+            logger.info("Storage initialized")
+        except asyncio.TimeoutError:
+            logger.warning("Storage initialization timed out (MinIO unavailable)")
     except Exception as e:
         logger.warning(f"Storage initialization failed (non-critical): {e}")
     
