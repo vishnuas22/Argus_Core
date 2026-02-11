@@ -412,13 +412,52 @@ class InferenceEngine:
             logger.warning(f"Batch size optimization failed: {e}, using default")
             return self.default_batch_size
     
+    async def warmup_model(
+        self,
+        model_name: str,
+        dummy_input_shape: Optional[Tuple[int, ...]] = None
+    ) -> bool:
+        """
+        Warmup a single model by loading and running dummy inference.
+        
+        JIT compilation and memory allocation happen on first inference,
+        so warming up reduces latency for first real request.
+        
+        Args:
+            model_name: Model to warmup
+            dummy_input_shape: Custom input shape (None = use model default)
+            
+        Returns:
+            True if warmup succeeded, False otherwise
+        """
+        try:
+            # Get model metadata for input shape
+            metadata = self.registry.get_model_metadata(model_name)
+            
+            if dummy_input_shape:
+                shape = dummy_input_shape
+            else:
+                shape = tuple(metadata.input_shape)
+            
+            # Create dummy input
+            dummy = np.random.randn(*shape).astype(np.float32)
+            
+            # Run inference
+            await self.infer(model_name, dummy, batch_size=1)
+            
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Warmup failed for {model_name}: {e}")
+            return False
+    
     async def warmup(
         self,
         model_names: List[str],
         dummy_input_shapes: Optional[Dict[str, Tuple[int, ...]]] = None
     ) -> Dict[str, bool]:
         """
-        Warmup models by running dummy inference.
+        Warmup multiple models by running dummy inference.
         
         JIT compilation and memory allocation happen on first inference,
         so warming up reduces latency for first real request.
@@ -433,27 +472,10 @@ class InferenceEngine:
         results = {}
         
         for model_name in model_names:
-            try:
-                # Get model metadata for input shape
-                metadata = self.registry.get_model_metadata(model_name)
-                
-                if dummy_input_shapes and model_name in dummy_input_shapes:
-                    shape = dummy_input_shapes[model_name]
-                else:
-                    shape = tuple(metadata.input_shape)
-                
-                # Create dummy input
-                dummy = np.random.randn(*shape).astype(np.float32)
-                
-                # Run inference
-                await self.infer(model_name, dummy, batch_size=1)
-                
-                results[model_name] = True
+            shape = dummy_input_shapes.get(model_name) if dummy_input_shapes else None
+            results[model_name] = await self.warmup_model(model_name, shape)
+            if results[model_name]:
                 logger.info(f"Warmed up model: {model_name}")
-                
-            except Exception as e:
-                logger.warning(f"Warmup failed for {model_name}: {e}")
-                results[model_name] = False
         
         return results
     
