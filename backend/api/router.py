@@ -42,10 +42,11 @@ from schemas.schemas import (
 from storage.storage import StorageClient
 from storage.db import DatabaseClient
 from processing.sanitize import InputSanitizer, SanitizedFile
+from core.engine import InferenceEngine
 from api.deps import (
     get_db, get_storage, get_sanitizer_standard, get_sanitizer_aggressive,
     get_orchestrator, get_correlation_id, get_current_user_optional,
-    get_analysis_deps, AnalysisDependencies, check_rate_limit
+    get_analysis_deps, AnalysisDependencies, check_rate_limit, get_engine
 )
 from utils.logging import get_logger
 from utils.errors import AnalysisNotFoundError, InvalidFileError, ValidationError
@@ -544,9 +545,10 @@ async def analyze_text(
 )
 async def health_check(
     db: DatabaseClient = Depends(get_db),
-    storage: StorageClient = Depends(get_storage)
+    storage: StorageClient = Depends(get_storage),
+    engine: InferenceEngine = Depends(get_engine)
 ):
-    """Health check endpoint for load balancers."""
+    """Health check endpoint for load balancers and model status monitoring."""
     health = {
         "status": "healthy",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -571,6 +573,49 @@ async def health_check(
         health["components"]["storage"] = "healthy" if exists else "bucket_missing"
     except Exception as e:
         health["components"]["storage"] = f"unhealthy: {str(e)}"
+        health["status"] = "degraded"
+    
+    # Check AI models status
+    try:
+        from models.manager import get_model_manager
+        manager = get_model_manager()
+        
+        loaded_models = manager.get_loaded_models()
+        vram_used = manager.get_vram_usage()
+        vram_available = manager.get_available_vram()
+        model_stats = manager.get_model_stats()
+        
+        # Determine model health
+        if len(loaded_models) >= 3:
+            models_status = "healthy"
+        elif len(loaded_models) >= 1:
+            models_status = "degraded"
+            health["status"] = "degraded"
+        else:
+            models_status = "unhealthy"
+            health["status"] = "degraded"
+        
+        health["components"]["models"] = {
+            "status": models_status,
+            "loaded": len(loaded_models),
+            "model_names": loaded_models,
+            "vram_used_mb": vram_used,
+            "vram_available_mb": vram_available,
+            "details": {
+                name: {
+                    "vram_mb": stats["vram_mb"],
+                    "use_count": stats["use_count"],
+                    "age_seconds": round(stats["age_seconds"], 2)
+                }
+                for name, stats in model_stats.items()
+            }
+        }
+        
+    except Exception as e:
+        health["components"]["models"] = {
+            "status": f"unhealthy: {str(e)}",
+            "loaded": 0
+        }
         health["status"] = "degraded"
     
     return health
