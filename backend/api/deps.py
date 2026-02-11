@@ -32,6 +32,7 @@ from processing.sanitize import InputSanitizer
 from core.engine import InferenceEngine, get_inference_engine
 from core.fusion import MultiModalFusion, get_multi_modal_fusion
 from core.scorer import TrustScorer, get_trust_scorer
+from models.manager import get_model_manager
 from utils.logging import get_logger
 from utils.errors import AuthenticationError
 
@@ -533,6 +534,7 @@ async def startup_dependencies() -> None:
     Initialize dependencies on application startup.
     
     Called during FastAPI startup event.
+    Preloads critical models for immediate availability.
     """
     logger.info("Initializing dependencies...")
     
@@ -555,10 +557,40 @@ async def startup_dependencies() -> None:
     except Exception as e:
         logger.warning(f"Storage initialization failed (non-critical): {e}")
     
-    # Initialize inference engine (lazy - doesn't load models yet)
+    # Initialize inference engine and warmup critical models
     try:
-        get_inference_engine()
+        engine = get_inference_engine()
         logger.info("Inference engine initialized")
+        
+        # Warmup critical models for immediate availability
+        logger.info("Warming up AI models...")
+        critical_models = [
+            "efficientnet_b3_spatial",
+            "retinaface",
+            "purdue_m2",
+            "clip_vit_b16"
+        ]
+        
+        warmup_start = asyncio.get_event_loop().time()
+        for model_name in critical_models:
+            try:
+                await engine.warmup_model(model_name)
+                logger.info(f"✓ Model loaded: {model_name}")
+            except Exception as e:
+                logger.warning(f"✗ Failed to load {model_name}: {e}")
+        
+        warmup_time = asyncio.get_event_loop().time() - warmup_start
+        logger.info(f"Model warmup completed in {warmup_time:.2f}s")
+        
+        # Log loaded models summary
+        manager = get_model_manager()
+        loaded = manager.get_loaded_models()
+        vram_used = manager.get_vram_usage()
+        vram_available = manager.get_available_vram()
+        
+        logger.info(f"Models ready: {len(loaded)}/{len(critical_models)} loaded")
+        logger.info(f"VRAM: {vram_used}MB used, {vram_available}MB available")
+        
     except Exception as e:
         logger.warning(f"Inference engine initialization failed (non-critical): {e}")
     
