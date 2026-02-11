@@ -107,7 +107,7 @@ async def analyze_media(
         f"Analysis request received",
         extra={
             "analysis_id": analysis_id,
-            "filename": file.filename,
+            "file_name": file.filename,
             "content_type": file.content_type,
             "correlation_id": deps.correlation_id
         }
@@ -585,24 +585,41 @@ async def health_check(
 async def list_models():
     """List available detection models."""
     from models.registry import get_model_registry
+    from models.manager import get_model_manager
     
     registry = get_model_registry()
+    manager = get_model_manager()
+    loaded_models = manager.get_loaded_models()
+    
     models = []
     
-    for name in registry.list_available():
+    for name in registry.list_models(category=None):
         try:
             metadata = registry.get_model_metadata(name)
+            is_loaded = name in loaded_models
+            file_exists = registry.model_file_exists(name)
+            
+            category_val = metadata.category.value if hasattr(metadata.category, 'value') else str(metadata.category)
+            
             models.append({
                 "name": name,
-                "category": metadata.category.value,
+                "category": category_val,
                 "vram_mb": metadata.vram_mb,
-                "loaded": False,  # TODO: Check loaded status from manager
-                "version": metadata.version
+                "loaded": is_loaded,
+                "file_exists": file_exists,
+                "version": metadata.version,
+                "description": metadata.description
             })
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to get metadata for model {name}: {e}")
     
-    return {"models": models, "count": len(models)}
+    return {
+        "models": models,
+        "count": len(models),
+        "loaded_count": len(loaded_models),
+        "vram_usage_mb": manager.get_vram_usage(),
+        "vram_limit_mb": manager.max_vram_mb
+    }
 
 
 @router.get(
