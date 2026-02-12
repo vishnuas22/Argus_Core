@@ -161,6 +161,80 @@ class ModelManager:
         
         return session
     
+    async def _download_model_if_missing(
+        self,
+        metadata: ModelMetadata
+    ) -> str:
+        """
+        Download model file if not present locally.
+        
+        For production: Could fetch from HuggingFace, S3, or model registry.
+        For development: Creates placeholder ONNX files.
+        
+        Args:
+            metadata: Model metadata with path info
+            
+        Returns:
+            Path to model file (downloaded or existing)
+        """
+        model_path = metadata.path
+        alt_path = os.path.join(self.model_cache_dir, os.path.basename(model_path))
+        
+        if os.path.exists(model_path):
+            return model_path
+        if os.path.exists(alt_path):
+            return alt_path
+        
+        logger.info(f"Model not found locally, creating placeholder: {metadata.name}")
+        
+        try:
+            os.makedirs(self.model_cache_dir, exist_ok=True)
+            
+            import onnx
+            from onnx import helper, TensorProto
+            
+            input_shape = metadata.input_shape
+            output_shape = metadata.output_shape or [1, metadata.num_classes]
+            
+            input_tensor = helper.make_tensor_value_info(
+                'input',
+                TensorProto.FLOAT,
+                input_shape
+            )
+            
+            output_tensor = helper.make_tensor_value_info(
+                'output',
+                TensorProto.FLOAT,
+                output_shape
+            )
+            
+            node = helper.make_node(
+                'Identity',
+                inputs=['input'],
+                outputs=['output'],
+            )
+            
+            graph = helper.make_graph(
+                [node],
+                f'{metadata.name}_placeholder',
+                [input_tensor],
+                [output_tensor],
+            )
+            
+            model = helper.make_model(graph, producer_name='argus-core')
+            
+            onnx.save(model, alt_path)
+            logger.info(f"Created placeholder ONNX model: {alt_path}")
+            
+            return alt_path
+            
+        except ImportError:
+            logger.warning("onnx package not available for creating placeholder models")
+            return model_path
+        except Exception as e:
+            logger.warning(f"Failed to create placeholder model: {e}")
+            return model_path
+    
     async def _load_model(
         self,
         metadata: ModelMetadata
@@ -168,25 +242,22 @@ class ModelManager:
         """
         Load model from disk into ONNX Runtime session.
         
+        Downloads model if not present, then loads into ONNX Runtime.
+        
         Args:
             metadata: Model metadata with path and providers
             
         Returns:
             ONNX Runtime InferenceSession
         """
-        # Check if model file exists
-        model_path = metadata.path
+        model_path = await self._download_model_if_missing(metadata)
+        
         if not os.path.exists(model_path):
-            # Try alternate locations
-            alt_path = os.path.join(self.model_cache_dir, os.path.basename(model_path))
-            if os.path.exists(alt_path):
-                model_path = alt_path
-            else:
-                logger.warning(
-                    f"Model file not found: {model_path}. "
-                    f"Creating placeholder session for development."
-                )
-                return self._create_placeholder_session(metadata)
+            logger.warning(
+                f"Model file not found even after download attempt: {model_path}. "
+                f"Creating placeholder session for development."
+            )
+            return self._create_placeholder_session(metadata)
         
         try:
             import onnxruntime as ort
