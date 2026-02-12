@@ -529,33 +529,100 @@ async def get_analysis_deps(
 
 # ============== LIFECYCLE MANAGEMENT ==============
 
+async def wait_for_redis(max_retries: int = 10, retry_delay: float = 2.0) -> bool:
+    """
+    Wait for Redis to be available.
+    
+    Args:
+        max_retries: Maximum number of connection attempts
+        retry_delay: Delay between retries in seconds
+        
+    Returns:
+        True if Redis is available, False otherwise
+    """
+    import redis.asyncio as aioredis
+    
+    for attempt in range(1, max_retries + 1):
+        try:
+            redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
+            await redis_client.ping()
+            await redis_client.close()
+            logger.info(f"✓ Redis is available")
+            return True
+        except Exception as e:
+            if attempt < max_retries:
+                logger.warning(f"Redis not ready (attempt {attempt}/{max_retries}), retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error(f"✗ Redis unavailable after {max_retries} attempts: {e}")
+                return False
+    return False
+
+
+async def wait_for_minio(max_retries: int = 10, retry_delay: float = 2.0) -> bool:
+    """
+    Wait for MinIO to be available.
+    
+    Args:
+        max_retries: Maximum number of connection attempts
+        retry_delay: Delay between retries in seconds
+        
+    Returns:
+        True if MinIO is available, False otherwise
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            storage = get_storage_client()
+            await asyncio.wait_for(storage.ensure_default_buckets(), timeout=5.0)
+            logger.info(f"✓ MinIO is available and buckets initialized")
+            return True
+        except Exception as e:
+            if attempt < max_retries:
+                logger.warning(f"MinIO not ready (attempt {attempt}/{max_retries}), retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error(f"✗ MinIO unavailable after {max_retries} attempts: {e}")
+                return False
+    return False
+
+
 async def startup_dependencies() -> None:
     """
     Initialize dependencies on application startup.
     
     Called during FastAPI startup event.
     Preloads critical models for immediate availability.
+    Ensures Redis and MinIO services are ready before proceeding.
     """
-    logger.info("Initializing dependencies...")
+    logger.info("="*60)
+    logger.info("ARGUS CORE - INITIALIZING SERVICES")
+    logger.info("="*60)
+    
+    # Wait for Redis to be available
+    logger.info("Checking Redis availability...")
+    redis_available = await wait_for_redis()
+    if not redis_available:
+        logger.error("CRITICAL: Redis is required for application functionality")
+        raise RuntimeError("Redis service is not available")
+    
+    # Wait for MinIO to be available
+    logger.info("Checking MinIO availability...")
+    minio_available = await wait_for_minio()
+    if not minio_available:
+        logger.error("CRITICAL: MinIO is required for file storage")
+        raise RuntimeError("MinIO service is not available")
     
     # Connect to database
     try:
         await get_db_client()
-        logger.info("Database connected")
+        logger.info("✓ MongoDB connected")
     except Exception as e:
-        logger.warning(f"Database connection failed (non-critical): {e}")
+        logger.error(f"✗ Database connection failed: {e}")
+        raise RuntimeError(f"MongoDB connection failed: {e}")
     
-    # Initialize storage (skip if MinIO not available)
-    try:
-        storage = get_storage_client()
-        # Run with timeout to avoid blocking if MinIO is down
-        try:
-            await asyncio.wait_for(storage.ensure_default_buckets(), timeout=3.0)
-            logger.info("Storage initialized")
-        except asyncio.TimeoutError:
-            logger.warning("Storage initialization timed out (MinIO unavailable)")
-    except Exception as e:
-        logger.warning(f"Storage initialization failed (non-critical): {e}")
+    logger.info("="*60)
+    logger.info("ALL INFRASTRUCTURE SERVICES READY")
+    logger.info("="*60)
     
     # Initialize inference engine and warmup critical models
     try:
