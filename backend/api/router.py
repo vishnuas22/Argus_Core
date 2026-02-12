@@ -575,6 +575,38 @@ async def health_check(
         health["components"]["storage"] = f"unhealthy: {str(e)}"
         health["status"] = "degraded"
     
+    # Check Redis
+    try:
+        import redis.asyncio as aioredis
+        redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
+        await redis_client.ping()
+        await redis_client.close()
+        health["components"]["redis"] = "healthy"
+    except Exception as e:
+        health["components"]["redis"] = f"unhealthy: {str(e)}"
+        health["status"] = "degraded"
+    
+    # Check Celery
+    try:
+        from processing.tasks import celery_app
+        inspect = celery_app.control.inspect()
+        stats = inspect.stats()
+        if stats:
+            active_workers = len(stats)
+            health["components"]["celery"] = {
+                "status": "healthy",
+                "active_workers": active_workers
+            }
+        else:
+            health["components"]["celery"] = {
+                "status": "no_workers",
+                "active_workers": 0
+            }
+            health["status"] = "degraded"
+    except Exception as e:
+        health["components"]["celery"] = f"unhealthy: {str(e)}"
+        health["status"] = "degraded"
+    
     # Check AI models status
     try:
         from models.manager import get_model_manager
