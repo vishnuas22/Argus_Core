@@ -560,39 +560,63 @@ async def startup_dependencies() -> None:
     # Initialize inference engine and warmup critical models
     try:
         engine = get_inference_engine()
+        manager = get_model_manager()
         logger.info("Inference engine initialized")
         
         # Warmup critical models for immediate availability
-        logger.info("Warming up AI models...")
+        logger.info("="*60)
+        logger.info("DOWNLOADING & LOADING AI MODELS...")
+        logger.info("="*60)
+        
         critical_models = [
             "efficientnet_b3_spatial",
             "retinaface",
             "purdue_m2",
-            "clip_vit_b16"
+            "clip_vit_b16",
+            "siglip_deepfake",
+            "xclip_temporal"
         ]
         
         warmup_start = asyncio.get_event_loop().time()
+        successfully_loaded = 0
+        failed_models = []
+        
         for model_name in critical_models:
             try:
+                logger.info(f"Loading model: {model_name}...")
                 await engine.warmup_model(model_name)
-                logger.info(f"✓ Model loaded: {model_name}")
+                successfully_loaded += 1
+                logger.info(f"  ✓ {model_name} - READY")
             except Exception as e:
-                logger.warning(f"✗ Failed to load {model_name}: {e}")
+                failed_models.append(model_name)
+                logger.warning(f"  ✗ {model_name} - FAILED: {str(e)[:100]}")
         
         warmup_time = asyncio.get_event_loop().time() - warmup_start
-        logger.info(f"Model warmup completed in {warmup_time:.2f}s")
         
-        # Log loaded models summary
-        manager = get_model_manager()
+        # Log summary
+        logger.info("="*60)
+        logger.info(f"MODEL LOADING SUMMARY:")
+        logger.info(f"  • Successfully loaded: {successfully_loaded}/{len(critical_models)} models")
+        logger.info(f"  • Total time: {warmup_time:.2f}s")
+        
+        if failed_models:
+            logger.warning(f"  • Failed models: {', '.join(failed_models)}")
+            logger.warning(f"  • These will use placeholder inference for development")
+        
+        # Log VRAM usage
         loaded = manager.get_loaded_models()
         vram_used = manager.get_vram_usage()
         vram_available = manager.get_available_vram()
         
-        logger.info(f"Models ready: {len(loaded)}/{len(critical_models)} loaded")
-        logger.info(f"VRAM: {vram_used}MB used, {vram_available}MB available")
+        logger.info(f"VRAM STATUS:")
+        logger.info(f"  • Used: {vram_used}MB")
+        logger.info(f"  • Available: {vram_available}MB")
+        logger.info(f"  • Loaded models: {', '.join(loaded) if loaded else 'None (using placeholders)'}")
+        logger.info("="*60)
         
     except Exception as e:
-        logger.warning(f"Inference engine initialization failed (non-critical): {e}")
+        logger.error(f"Inference engine initialization failed: {e}", exc_info=True)
+        logger.warning("Application will continue with limited functionality")
     
     logger.info("All dependencies initialized")
 
