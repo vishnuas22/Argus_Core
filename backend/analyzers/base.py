@@ -467,16 +467,21 @@ def compute_confidence(
     Args:
         scores: Array of individual scores
         num_samples: Number of samples analyzed
-        min_samples: Minimum samples for full confidence
+        min_samples: Minimum samples for full confidence (only affects multi-sample)
         
     Returns:
         Confidence score [0, 1]
     """
     if len(scores) == 0:
-        return 0.3
+        return 0.5  # Neutral confidence when no scores
     
-    # Sample count factor (more samples = higher confidence)
-    sample_factor = min(1.0, num_samples / min_samples)
+    # Sample count factor
+    # For single images (num_samples=1), use full confidence - this is the expected case
+    # For multiple samples, scale based on count
+    if num_samples == 1:
+        sample_factor = 1.0  # Single image is the normal case, not a low-confidence case
+    else:
+        sample_factor = min(1.0, num_samples / min_samples)
     
     # Consistency factor (lower variance = higher confidence)
     variance = np.var(scores)
@@ -490,7 +495,9 @@ def compute_confidence(
     # Combine factors
     confidence = sample_factor * consistency_factor * extremity_factor
     
-    return float(np.clip(confidence, 0.3, 0.95))
+    # Allow full range - don't artificially cap at 0.3 minimum
+    # Low confidence should only come from actual uncertainty signals
+    return float(np.clip(confidence, 0.1, 0.95))
 
 
 def detect_anomalies(
