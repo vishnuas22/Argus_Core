@@ -372,10 +372,16 @@ class MultiModalFusion:
         # Handle single modality case
         if len(results) == 1:
             result = results[0]
+            # For single modality, uncertainty should be based on score extremity
+            # not just 1 - confidence (which double-penalizes in TrustScorer)
+            # Low uncertainty for confident predictions (away from 0.5)
+            score_extremity = abs(result.score - 0.5) * 2  # 0 at 0.5, 1 at 0 or 1
+            # Uncertainty is inverse of both confidence and extremity
+            uncertainty = (1 - result.confidence) * (1 - score_extremity * 0.5)
             return AggregatedResult(
                 modality_results=results,
                 fused_score=result.score,
-                uncertainty=1 - result.confidence,
+                uncertainty=uncertainty,
                 weights_used={result.modality.value: 1.0}
             )
         
