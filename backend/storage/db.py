@@ -368,7 +368,18 @@ class DatabaseClient:
                 "error": None
             }
             
-            await self.db.jobs.insert_one(doc)
+            # Use update_one with upsert to handle duplicate key errors on retry
+            result = await self.db.jobs.update_one(
+                {"job_id": job_id},
+                {"$setOnInsert": doc},
+                upsert=True
+            )
+            
+            # If document was already inserted (matched existing), just return the job_id
+            # This handles Celery task retries gracefully
+            if result.matched_count > 0:
+                logger.info(f"Job {job_id} already exists, continuing with existing job")
+            
             return job_id
             
         except Exception as e:
