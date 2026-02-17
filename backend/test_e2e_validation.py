@@ -65,7 +65,7 @@ class E2EValidator:
     """End-to-end validation for Argus Core."""
     
     def __init__(self):
-        self.backend_url = "http://localhost:8001"
+        self.backend_url = "http://localhost:8000"
         self.frontend_url = "http://localhost:3000"
         self.redis_url = "redis://localhost:6379/0"
         self.mongo_url = "mongodb://localhost:27017"
