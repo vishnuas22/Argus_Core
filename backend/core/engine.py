@@ -176,6 +176,10 @@ class InferenceEngine:
         """
         start_time = time.time()
         
+        # Handle dict inputs (multi-input models like ModernBERT)
+        if isinstance(inputs, dict):
+            return await self._infer_multi_input(model_name, inputs, return_probabilities)
+        
         # Normalize inputs to list
         if isinstance(inputs, np.ndarray):
             if inputs.ndim == 3:
@@ -411,6 +415,68 @@ class InferenceEngine:
         except Exception as e:
             logger.warning(f"Batch size optimization failed: {e}, using default")
             return self.default_batch_size
+    
+    async def _infer_multi_input(
+        self,
+        model_name: str,
+        inputs: Dict[str, np.ndarray],
+        return_probabilities: bool = True
+    ) -> InferenceResult:
+        """
+        Run inference on models with multiple inputs (e.g., ModernBERT).
+        
+        Args:
+            model_name: Model name from registry
+            inputs: Dict mapping input names to arrays
+            return_probabilities: Whether to compute class probabilities
+            
+        Returns:
+            InferenceResult with predictions and confidence
+        """
+        start_time = time.time()
+        
+        try:
+            session = await self.model_manager.get_model(model_name)
+            
+            # Prepare inputs with correct dtypes
+            feed_dict = {}
+            for inp in session.get_inputs():
+                name = inp.name
+                if name in inputs:
+                    arr = inputs[name]
+                    if arr.dtype != np.int64 and arr.dtype != np.int32:
+                        arr = arr.astype(np.int64)
+                    feed_dict[name] = arr
+            
+            # Run inference
+            outputs = session.run(None, feed_dict)
+            predictions = outputs[0]
+            
+            # Compute confidence and probabilities
+            if return_probabilities and predictions.shape[-1] >= 2:
+                if predictions.max() > 1.0 or predictions.min() < 0.0:
+                    class_probabilities = self._softmax(predictions)
+                else:
+                    class_probabilities = predictions
+                confidence = float(np.max(class_probabilities))
+            else:
+                class_probabilities = None
+                confidence = float(np.mean(np.abs(predictions)))
+            
+            inference_time_ms = (time.time() - start_time) * 1000
+            
+            return InferenceResult(
+                predictions=predictions,
+                confidence=confidence,
+                class_probabilities=class_probabilities,
+                inference_time_ms=inference_time_ms,
+                model_name=model_name,
+                batch_size=1
+            )
+            
+        except Exception as e:
+            logger.error(f"Multi-input inference failed for {model_name}: {e}")
+            raise InferenceError(model_name, str(e))
     
     async def warmup_model(
         self,
