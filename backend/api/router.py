@@ -325,8 +325,13 @@ async def get_analysis_detail(
         video_result=analysis.video_result,
         audio_result=analysis.audio_result,
         text_result=analysis.text_result,
+        image_result=getattr(analysis, 'image_result', None),
         metadata_result=analysis.metadata_result,
-        processing_time_seconds=analysis.processing_time_seconds
+        processing_time_seconds=analysis.processing_time_seconds,
+        # XAI Enhancement Fields
+        evidence_package=getattr(analysis, 'evidence_package', None),
+        feature_importance=getattr(analysis, 'feature_importance', []),
+        scientific_references=getattr(analysis, 'scientific_references', [])
     )
 
 
@@ -481,8 +486,11 @@ async def analyze_text(
         import hashlib
         text_hash = hashlib.sha256(text.encode()).hexdigest()
         
+        # Store text content for processing - use the actual storage path
+        text_storage_key = f"uploads/{analysis_id}/text_input.txt"
+        
         file_input = FileInput(
-            file_id=f"text/{analysis_id}",
+            file_id=text_storage_key,  # Must match the actual storage path
             file_type="text/plain",
             original_filename="text_input.txt",
             file_hash=text_hash,
