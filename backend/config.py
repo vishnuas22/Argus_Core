@@ -40,10 +40,15 @@ class Settings(BaseSettings):
     
     # ============== ML CONFIGURATION ==============
     model_cache_dir: str = "/models"
-    use_gpu: bool = True
+    use_gpu: bool = True  # Will be overridden by hardware detection
     gpu_memory_limit_mb: int = 3500  # RTX 3050 has 4GB, leave headroom
     enable_tensorrt: bool = True
     fallback_to_cpu: bool = True
+    
+    # ============== MODEL DOWNLOAD ==============
+    auto_download_models: bool = True  # Automatically download missing models
+    download_on_startup: bool = True  # Download essential models on startup
+    huggingface_token: Optional[str] = None  # Optional HF token for private models
     
     # ============== PROCESSING ==============
     max_video_duration_seconds: int = 300  # 5 minutes max

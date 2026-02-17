@@ -36,6 +36,7 @@ from schemas.schemas import TemporalResult
 from config import config
 from utils.logging import get_logger
 from utils.errors import InferenceError
+from models.model_init import ensure_models_for_analyzer, is_model_ready
 
 if TYPE_CHECKING:
     from core.engine import InferenceEngine

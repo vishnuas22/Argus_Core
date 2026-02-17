@@ -61,6 +61,7 @@ import { useProgressStore, selectProgress, STAGE_LABELS } from '@/store/progress
 // Components
 import { ProgressIndicator, ProgressIndicatorSkeleton } from '@/components/analysis/ProgressIndicator';
 import { AnalysisTimeline, AnalysisTimelineSkeleton } from '@/components/analysis/AnalysisTimeline';
+import { XAIExplanationPanel } from '@/components/xai';
 
 // Types
 import type { AnalysisStatus, Verdict, TrustScore } from '@/types/analysis';
@@ -693,6 +694,18 @@ export default function AnalysisPage({ params }: AnalysisPageProps) {
                 </div>
               </CardContent>
             </Card>
+          )}
+
+          {/* XAI Explanation Panel - Court-Admissible Forensic Evidence */}
+          {isComplete && (
+            <XAIExplanationPanel
+              analysisId={analysisId}
+              showModalityTabs
+              showEvidenceGallery
+              showReferences
+              showReproducibility
+              defaultExpanded
+            />
           )}
         </div>
       </main>

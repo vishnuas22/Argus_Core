@@ -509,7 +509,7 @@ function PerplexityAnalysisSection({
               What is Perplexity?
             </h4>
             <p className="text-xs text-muted-foreground">
-              Perplexity measures how "surprised" a language model is by text. Lower values 
+              Perplexity measures how &quot;surprised&quot; a language model is by text. Lower values 
               indicate highly predictable text (often AI-generated), while higher values 
               suggest more creative, unpredictable human writing. GPT-2 is used as the 
               reference model for measuring text predictability.
@@ -571,7 +571,7 @@ function BurstinessAnalysisSection({
             <AlertTitle className="text-green-700 dark:text-green-400">Natural Burstiness</AlertTitle>
             <AlertDescription className="text-green-600 dark:text-green-300">
               The text exhibits natural sentence length variation typical of human writing.
-              This "bursty" pattern is characteristic of authentic human-authored content.
+              This &quot;bursty&quot; pattern is characteristic of authentic human-authored content.
             </AlertDescription>
           </Alert>
         ) : (
@@ -742,7 +742,7 @@ function RadarModelSection({
             <p className="text-xs text-muted-foreground">
               RADAR (Robust AI-text Detection via Adversarial leaRning) is a classifier 
               trained to distinguish AI-generated text from human text using adversarial 
-              training techniques. It's designed to be robust against paraphrasing and 
+              training techniques. It&apos;s designed to be robust against paraphrasing and 
               other evasion techniques.
             </p>
           </div>

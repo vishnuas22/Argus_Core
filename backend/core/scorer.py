@@ -290,11 +290,14 @@ class TrustScorer:
         Confidence represents how reliable the score is, based on:
         - Number of modalities analyzed
         - Individual modality confidences
-        - Ensemble uncertainty
+        - Score extremity (confident predictions get higher confidence)
+        
+        Note: Uncertainty is already factored into modality confidences,
+        so we don't double-penalize here.
         
         Args:
             aggregated: Aggregated result
-            uncertainty: Fusion uncertainty
+            uncertainty: Fusion uncertainty (used for context, not penalty)
             
         Returns:
             Confidence score (0-1)
@@ -307,14 +310,23 @@ class TrustScorer:
             base_confidence = 0.5
         
         # Adjust for number of modalities
+        # Single modality should still allow high confidence if the model is certain
         num_modalities = len(aggregated.modality_results)
-        modality_factor = min(1.0, 0.5 + 0.1 * num_modalities)
+        if num_modalities >= 3:
+            modality_factor = 1.0
+        elif num_modalities == 2:
+            modality_factor = 0.95
+        else:
+            # Single modality - allow up to 0.9 confidence
+            modality_factor = 0.9
         
-        # Adjust for uncertainty
-        uncertainty_factor = 1.0 - uncertainty
+        # Score extremity factor - predictions near 0 or 1 are more confident
+        score_extremity = abs(aggregated.fused_score - 0.5) * 2
+        extremity_factor = 0.85 + 0.15 * score_extremity
         
-        # Combine factors
-        confidence = base_confidence * modality_factor * uncertainty_factor
+        # Combine factors - don't apply uncertainty penalty again
+        # as it's already in the modality confidence
+        confidence = base_confidence * modality_factor * extremity_factor
         
         return float(np.clip(confidence, 0.1, 0.95))
     

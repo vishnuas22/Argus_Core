@@ -41,8 +41,8 @@ MAX_RETRIES = 3
 RETRY_DELAY_BASE = 1.0
 RETRY_DELAY_MAX = 10.0
 
-# Local storage fallback directory
-LOCAL_STORAGE_BASE = "/app/storage_fallback"
+# Local storage fallback directory - use current working directory or temp
+LOCAL_STORAGE_BASE = os.environ.get("LOCAL_STORAGE_PATH", os.path.join(os.getcwd(), "storage_fallback"))
 
 
 class LocalStorageClient:

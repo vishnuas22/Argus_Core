@@ -8,7 +8,7 @@ Implements: PRIME_ARGUS_DOCUMENT.md - Appendix A: Shared Schemas
 """
 
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from enum import Enum
 from datetime import datetime, timezone
 import uuid
@@ -106,6 +106,60 @@ class TrustScore(BaseSchema):
     calibrated: bool = Field(default=True, description="Whether Platt calibration was applied")
 
 
+class ManipulationRegion(BaseSchema):
+    """Detected manipulation region for explainability."""
+    region_type: str = Field(..., description="Region type: face, mouth, background, etc.")
+    location: str = Field(..., description="Description or coordinates of region")
+    confidence: float = Field(..., ge=0, le=1, description="Detection confidence")
+    frame_indices: Optional[List[int]] = Field(default=None, description="Affected frame indices")
+
+
+class AudioArtifactRegion(BaseSchema):
+    """
+    Detected artifact region in audio spectrogram.
+    
+    Marks regions with synthetic voice artifacts.
+    """
+    start_time: float = Field(..., ge=0, description="Start time in seconds")
+    end_time: float = Field(..., ge=0, description="End time in seconds")
+    freq_low: float = Field(..., ge=0, description="Low frequency bound in Hz")
+    freq_high: float = Field(..., ge=0, description="High frequency bound in Hz")
+    artifact_type: str = Field(..., description="Type: 'vocoder', 'spectral_gap', 'harmonic_inconsistency'")
+    confidence: float = Field(..., ge=0, le=1, description="Detection confidence")
+
+
+class TokenAttribution(BaseSchema):
+    """
+    Token-level attribution for text analysis.
+    
+    Shows which tokens contribute most to AI-detection decision.
+    Positive scores indicate AI-indicative, negative indicate human-indicative.
+    """
+    token: str = Field(..., description="The text token/word")
+    attribution_score: float = Field(
+        ..., 
+        description="Attribution score: positive = AI-indicative, negative = human-indicative"
+    )
+    position: int = Field(..., ge=0, description="Token position in text")
+    interpretation: str = Field(
+        default="neutral",
+        description="Interpretation: 'ai_indicative', 'human_indicative', or 'neutral'"
+    )
+    perplexity: Optional[float] = Field(default=None, description="Perplexity score for this token")
+
+
+class PerplexityBreakdown(BaseSchema):
+    """
+    Perplexity analysis breakdown for text segments.
+    
+    Shows which parts of text have anomalous perplexity scores.
+    """
+    segment: str = Field(..., description="The text segment analyzed")
+    perplexity: float = Field(..., ge=0, description="Perplexity score for this segment")
+    token_count: int = Field(default=0, ge=0, description="Number of tokens in segment")
+    is_anomalous: bool = Field(default=False, description="Whether perplexity is anomalously low (AI-like)")
+
+
 class SpatialResult(BaseSchema):
     """
     Per-frame spatial artifact detection results.
@@ -119,6 +173,33 @@ class SpatialResult(BaseSchema):
     per_frame_scores: List[float] = Field(default_factory=list, description="Per-frame detection scores")
     anomaly_indices: List[int] = Field(default_factory=list, description="Frame indices with detected anomalies")
     heatmap_urls: List[str] = Field(default_factory=list, description="GradCAM heatmap URLs for anomaly frames")
+    # XAI Enhancement Fields
+    dct_anomaly_score: float = Field(
+        default=0.0,
+        ge=0,
+        le=1,
+        description="DCT frequency domain anomaly score"
+    )
+    gan_fingerprint_detected: bool = Field(
+        default=False,
+        description="Whether GAN fingerprint was detected"
+    )
+    manipulation_regions: List[ManipulationRegion] = Field(
+        default_factory=list,
+        description="Detailed manipulation region information"
+    )
+    efficientnet_score: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="Raw EfficientNet-B3 deepfake classifier score"
+    )
+    clip_score: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="CLIP-based semantic consistency score"
+    )
 
 
 class TemporalResult(BaseSchema):
@@ -134,6 +215,25 @@ class TemporalResult(BaseSchema):
     consistency_score: float = Field(..., ge=0, le=1, description="Temporal consistency score")
     flickering_detected: bool = Field(default=False, description="Whether flickering artifacts detected")
     anomaly_timestamps: List[float] = Field(default_factory=list, description="Timestamps of detected anomalies")
+    # XAI Enhancement Fields
+    motion_anomaly_score: float = Field(
+        default=0.0,
+        ge=0,
+        le=1,
+        description="Score for unnatural motion patterns"
+    )
+    landmark_jitter_score: float = Field(
+        default=0.0,
+        ge=0,
+        le=1,
+        description="Facial landmark jitter analysis score"
+    )
+    xclip_score: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="X-CLIP temporal consistency model score"
+    )
 
 
 class LipSyncResult(BaseSchema):
@@ -149,6 +249,19 @@ class LipSyncResult(BaseSchema):
     sync_score: float = Field(..., ge=0, le=1, description="Audio-visual sync score")
     manipulation_probability: float = Field(..., ge=0, le=1, description="Lip-sync manipulation probability")
     detected_technology: Optional[str] = Field(default=None, description="Detected lip-sync technology if identified")
+    # XAI Enhancement Fields
+    lip_region_heatmap_url: Optional[str] = Field(
+        default=None,
+        description="URL to lip region attention heatmap"
+    )
+    audio_visual_offset_ms: Optional[float] = Field(
+        default=None,
+        description="Detected audio-visual offset in milliseconds"
+    )
+    confidence_interval: Optional[Dict[str, float]] = Field(
+        default=None,
+        description="Confidence interval for sync score"
+    )
 
 
 class VideoResult(BaseSchema):
@@ -164,6 +277,19 @@ class VideoResult(BaseSchema):
     aggregate_score: float = Field(..., ge=0, le=1, description="Weighted aggregate video score")
     frames_analyzed: int = Field(default=0, description="Number of frames analyzed")
     face_detected: bool = Field(default=False, description="Whether face was detected in video")
+    # XAI Enhancement Fields
+    frame_heatmap_urls: List[str] = Field(
+        default_factory=list,
+        description="URLs to frame-level heatmaps"
+    )
+    temporal_heatmap_url: Optional[str] = Field(
+        default=None,
+        description="URL to temporal analysis visualization"
+    )
+    confidence_interval: Optional[Dict[str, float]] = Field(
+        default=None,
+        description="Confidence interval for aggregate score"
+    )
 
 
 class AudioResult(BaseSchema):
@@ -179,6 +305,23 @@ class AudioResult(BaseSchema):
     vocoder_artifacts_detected: bool = Field(default=False, description="Whether vocoder artifacts detected")
     voice_consistency_score: float = Field(..., ge=0, le=1, description="Voice consistency across segments")
     spectrogram_url: Optional[str] = Field(default=None, description="URL to mel-spectrogram visualization")
+    # XAI Enhancement Fields
+    artifact_regions: List[AudioArtifactRegion] = Field(
+        default_factory=list,
+        description="Detected artifact regions in spectrogram"
+    )
+    frequency_anomaly_score: float = Field(
+        default=0.0,
+        ge=0,
+        le=1,
+        description="Score indicating frequency domain anomalies"
+    )
+    aasist_score: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="AASIST anti-spoofing model score"
+    )
 
 
 class TextResult(BaseSchema):
@@ -193,6 +336,27 @@ class TextResult(BaseSchema):
     perplexity_score: float = Field(default=0.0, description="GPT-2 perplexity score")
     burstiness_score: float = Field(default=0.0, description="Sentence length variance")
     radar_score: Optional[float] = Field(default=None, description="RADAR classifier score")
+    # XAI Enhancement Fields
+    token_attributions: List[TokenAttribution] = Field(
+        default_factory=list,
+        description="Token-level attribution scores"
+    )
+    perplexity_breakdown: List[PerplexityBreakdown] = Field(
+        default_factory=list,
+        description="Per-segment perplexity analysis"
+    )
+    roberta_score: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description="RoBERTa AI-detector model score"
+    )
+    vocabulary_diversity: float = Field(
+        default=0.0,
+        ge=0,
+        le=1,
+        description="Vocabulary diversity score"
+    )
 
 
 class C2PAManifest(BaseSchema):
@@ -219,12 +383,144 @@ class MetadataResult(BaseSchema):
     file_structure_valid: bool = Field(default=True, description="File structure integrity check")
 
 
-class ManipulationRegion(BaseSchema):
-    """Detected manipulation region for explainability."""
-    region_type: str = Field(..., description="Region type: face, mouth, background, etc.")
-    location: str = Field(..., description="Description or coordinates of region")
-    confidence: float = Field(..., ge=0, le=1, description="Detection confidence")
-    frame_indices: Optional[List[int]] = Field(default=None, description="Affected frame indices")
+class ImageResult(BaseSchema):
+    """
+    Image deepfake detection results.
+    
+    Combines multiple detection signals:
+    - SigLIP/EfficientNet classifier scores
+    - DCT frequency analysis
+    - Face manipulation detection
+    """
+    ai_generated_probability: float = Field(..., ge=0, le=1, description="Probability image is AI-generated")
+    fake_probability: float = Field(..., ge=0, le=1, description="Probability image is manipulated/deepfake")
+    face_detected: bool = Field(default=False, description="Whether face was detected")
+    num_faces: int = Field(default=0, description="Number of faces detected")
+    face_manipulation_scores: List[float] = Field(default_factory=list, description="Per-face manipulation scores")
+    heatmap_url: Optional[str] = Field(default=None, description="URL to GradCAM heatmap")
+    # DCT Features
+    dct_anomaly_score: float = Field(default=0.0, ge=0, le=1, description="DCT frequency anomaly score")
+    spectral_flatness: float = Field(default=0.0, ge=0, le=1, description="Spectral flatness measure")
+    # Model scores
+    siglip_score: float = Field(default=0.0, ge=0, le=1, description="SigLIP classifier score")
+    efficientnet_score: float = Field(default=0.0, ge=0, le=1, description="EfficientNet classifier score")
+    # XAI Enhancement Fields
+    manipulation_regions: List[ManipulationRegion] = Field(
+        default_factory=list,
+        description="Detected manipulation regions"
+    )
+    confidence_interval: Optional[Dict[str, float]] = Field(
+        default=None,
+        description="Confidence interval for AI probability"
+    )
+
+
+# ============== XAI (EXPLAINABLE AI) SCHEMAS ==============
+
+class FeatureImportance(BaseSchema):
+    """
+    Feature-level importance scores for XAI.
+    
+    Indicates which features most influenced the prediction.
+    Used for court-admissible evidence documentation.
+    """
+    feature_name: str = Field(..., description="Name or identifier of the feature")
+    importance_score: float = Field(..., ge=0, le=1, description="Importance score 0-1")
+    contribution_direction: str = Field(
+        ..., 
+        description="Direction of contribution: 'increases_fake' or 'decreases_fake'"
+    )
+    confidence: float = Field(..., ge=0, le=1, description="Confidence in importance score")
+    feature_type: str = Field(
+        default="spatial",
+        description="Type: 'spatial', 'frequency', 'temporal', 'linguistic', 'acoustic'"
+    )
+
+
+class VisualEvidence(BaseSchema):
+    """
+    Visual evidence artifact for forensic reports.
+    
+    Each piece of visual evidence is stored with integrity hash
+    for chain of custody verification.
+    """
+    artifact_type: str = Field(
+        ..., 
+        description="Type: 'heatmap', 'spectrogram', 'frequency_plot', 'overlay', 'temporal_chart'"
+    )
+    url: str = Field(..., description="MinIO URL or presigned URL to the artifact")
+    description: str = Field(..., description="Human-readable description of the evidence")
+    frame_index: Optional[int] = Field(default=None, description="Frame number for video evidence")
+    timestamp_seconds: Optional[float] = Field(default=None, description="Timestamp for audio/video evidence")
+    integrity_hash: str = Field(..., description="SHA-256 hash of artifact content for chain of custody")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    width: Optional[int] = Field(default=None, description="Image width in pixels")
+    height: Optional[int] = Field(default=None, description="Image height in pixels")
+
+
+class EvidencePackage(BaseSchema):
+    """
+    Complete evidence package for court-admissible reports.
+    
+    Contains all visual evidence, feature importance data, and reproducibility
+    information required for legal proceedings.
+    """
+    visual_evidence: List[VisualEvidence] = Field(
+        default_factory=list,
+        description="List of visual evidence artifacts"
+    )
+    feature_importance: List[FeatureImportance] = Field(
+        default_factory=list,
+        description="Feature importance scores"
+    )
+    token_attributions: Optional[List[TokenAttribution]] = Field(
+        default=None,
+        description="Token-level attributions for text analysis"
+    )
+    perplexity_breakdown: Optional[List[PerplexityBreakdown]] = Field(
+        default=None,
+        description="Perplexity breakdown for text analysis"
+    )
+    audio_artifact_regions: Optional[List[AudioArtifactRegion]] = Field(
+        default=None,
+        description="Audio artifact regions for audio analysis"
+    )
+    model_versions: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Model name -> version mapping"
+    )
+    analysis_timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="When the analysis was performed"
+    )
+    integrity_hash: str = Field(
+        default="",
+        description="SHA-256 hash of entire package for chain of custody"
+    )
+    reproducibility_hash: str = Field(
+        default="",
+        description="SHA-256 hash for reproducibility verification"
+    )
+    reproducibility_data: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Parameters, thresholds, and settings for reproducibility"
+    )
+    confidence_interval: Optional[Tuple[float, float]] = Field(
+        default=None,
+        description="95% confidence interval (lower, upper) for the prediction"
+    )
+
+
+class ScientificReference(BaseSchema):
+    """
+    Scientific reference for methodology documentation.
+    
+    Provides peer-reviewed citations for detection methods used.
+    """
+    method_name: str = Field(..., description="Name of the detection method")
+    citation: str = Field(..., description="Full academic citation")
+    doi: Optional[str] = Field(default=None, description="DOI link if available")
+    accuracy_metrics: Optional[str] = Field(default=None, description="Known accuracy metrics")
 
 
 class Explanation(BaseSchema):
@@ -232,12 +528,38 @@ class Explanation(BaseSchema):
     Human-readable explanation of analysis results.
     
     Uses GradCAM++ and template-based generation.
+    Enhanced with XAI features for court-admissible evidence.
     """
     summary: str = Field(..., description="Executive summary of findings")
     key_findings: List[str] = Field(default_factory=list, description="Bullet-point key findings")
     manipulation_regions: List[ManipulationRegion] = Field(default_factory=list, description="Detected manipulation regions")
     confidence_rationale: str = Field(default="", description="Explanation of confidence level")
     methodology_used: List[str] = Field(default_factory=list, description="Analysis methods applied")
+    # XAI Enhancement Fields
+    feature_importance: List[FeatureImportance] = Field(
+        default_factory=list,
+        description="Feature-level importance scores"
+    )
+    evidence_package: Optional[EvidencePackage] = Field(
+        default=None,
+        description="Complete evidence package with visual artifacts"
+    )
+    confidence_interval: Optional[Tuple[float, float]] = Field(
+        default=None,
+        description="95% confidence interval (lower, upper)"
+    )
+    scientific_references: List[ScientificReference] = Field(
+        default_factory=list,
+        description="Peer-reviewed citations for methods used"
+    )
+    heatmap_urls: List[str] = Field(
+        default_factory=list,
+        description="URLs to GradCAM heatmap visualizations"
+    )
+    reproducibility_hash: str = Field(
+        default="",
+        description="SHA-256 hash for result reproducibility verification"
+    )
 
 
 # ============== ANALYSIS DOCUMENT ==============
@@ -263,12 +585,18 @@ class AnalysisDocument(BaseSchema):
     video_result: Optional[VideoResult] = None
     audio_result: Optional[AudioResult] = None
     text_result: Optional[TextResult] = None
+    image_result: Optional[ImageResult] = None
     metadata_result: Optional[MetadataResult] = None
     explanation: Optional[Explanation] = None
     
     # Outputs
     report_url: Optional[str] = None
     processing_time_seconds: Optional[float] = None
+    
+    # XAI Enhancement Fields (for court-admissible evidence)
+    evidence_package: Optional[EvidencePackage] = None
+    feature_importance: List[FeatureImportance] = Field(default_factory=list)
+    scientific_references: List[ScientificReference] = Field(default_factory=list)
     
     # Error handling
     error_message: Optional[str] = None
@@ -291,6 +619,19 @@ class AnalysisResponse(BaseSchema):
     report_url: Optional[str] = None
     created_at: datetime
     completed_at: Optional[datetime] = None
+    # XAI Enhancement Fields
+    heatmap_urls: List[str] = Field(
+        default_factory=list,
+        description="URLs to GradCAM heatmap visualizations"
+    )
+    evidence_package_url: Optional[str] = Field(
+        default=None,
+        description="URL to download complete evidence package"
+    )
+    confidence_interval: Optional[Dict[str, float]] = Field(
+        default=None,
+        description="95% confidence interval: {'lower': x, 'upper': y}"
+    )
 
 
 class AnalysisDetailResponse(AnalysisResponse):
@@ -298,8 +639,22 @@ class AnalysisDetailResponse(AnalysisResponse):
     video_result: Optional[VideoResult] = None
     audio_result: Optional[AudioResult] = None
     text_result: Optional[TextResult] = None
+    image_result: Optional[ImageResult] = None
     metadata_result: Optional[MetadataResult] = None
     processing_time_seconds: Optional[float] = None
+    # XAI Enhancement Fields
+    evidence_package: Optional[EvidencePackage] = Field(
+        default=None,
+        description="Complete evidence package with all XAI artifacts"
+    )
+    feature_importance: List[FeatureImportance] = Field(
+        default_factory=list,
+        description="Feature-level importance scores"
+    )
+    scientific_references: List[ScientificReference] = Field(
+        default_factory=list,
+        description="Peer-reviewed citations for methods used"
+    )
 
 
 # ============== INTERNAL SCHEMAS ==============

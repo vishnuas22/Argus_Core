@@ -206,9 +206,10 @@ class InputSanitizer:
         if len(content) >= 12:
             if content[4:8] == b'ftyp':
                 ftyp = content[8:12]
-                if ftyp in [b'mp41', b'mp42', b'isom', b'avc1', b'M4V ']:
+                # Common MP4 brands
+                if ftyp in [b'mp41', b'mp42', b'isom', b'avc1', b'M4V ', b'iso2', b'iso3', b'iso4', b'iso5', b'iso6', b'mp71', b'mp72', b'MSNV', b'f4v ']:
                     return FileType.VIDEO_MP4
-                if ftyp in [b'qt  ', b'MSNV']:
+                if ftyp in [b'qt  ']:
                     return FileType.VIDEO_MOV
         
         # AVI
