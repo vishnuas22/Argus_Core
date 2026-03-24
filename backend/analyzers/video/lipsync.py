@@ -31,7 +31,12 @@ import numpy as np
 from dataclasses import dataclass, field
 import time
 
-from analyzers.base import SubAnalyzer, compute_confidence
+from analyzers.base import (
+    SubAnalyzer,
+    compute_confidence,
+    infer_fake_class_index,
+    extract_fake_probabilities,
+)
 from schemas.schemas import LipSyncResult
 from config import config
 from utils.logging import get_logger
@@ -196,7 +201,7 @@ class LipSyncAnalyzer(SubAnalyzer):
         """
         return [
             "lipinc_v2",           # LIPINC-V2 lip-sync detector
-            "wav2vec2_features"    # Audio feature extractor
+            "wav2vec2_base"        # Audio feature extractor
         ]
     
     async def verify_sync(
@@ -239,7 +244,8 @@ class LipSyncAnalyzer(SubAnalyzer):
         lipinc_score = await self._run_lipinc_analysis(
             preprocessed_visual,
             preprocessed_audio,
-            engine
+            engine,
+            mouth_crops
         )
         
         # 3. Compute audio-visual correlation
@@ -339,10 +345,15 @@ class LipSyncAnalyzer(SubAnalyzer):
             
         Returns:
             Preprocessed features
+            
+        Raises:
+            ValueError: If audio features are None or empty
         """
         if audio_features is None or len(audio_features) == 0:
-            # Return dummy features
-            return np.zeros((16, 80), dtype=np.float32)
+            raise ValueError(
+                "Audio features are required for lip-sync analysis. "
+                "Cannot proceed with empty or None audio features."
+            )
         
         # Normalize
         features = audio_features.astype(np.float32)
@@ -356,13 +367,17 @@ class LipSyncAnalyzer(SubAnalyzer):
         self,
         visual_features: np.ndarray,
         audio_features: np.ndarray,
-        engine: "InferenceEngine"
+        engine: "InferenceEngine",
+        mouth_crops: List[np.ndarray]
     ) -> float:
         """
         Run LIPINC-V2 cross-modal analysis.
         
         LIPINC-V2 uses vision temporal transformer with multihead
         cross-attention to detect audio-visual inconsistencies.
+        
+        Note: When lipinc_v2 is unavailable (requires GPU), falls back to
+        ai_real_detector (PyTorch model) for per-frame analysis.
         
         Args:
             visual_features: Preprocessed mouth crops (T, C, H, W)
@@ -373,15 +388,9 @@ class LipSyncAnalyzer(SubAnalyzer):
             Manipulation probability [0, 1]
         """
         try:
-            # LIPINC expects combined audio-visual input
-            # Pack into single batch with both modalities
-            
-            # Add batch dimension
+            # Use LIPINC-V2 with 5D input
             visual_batch = np.expand_dims(visual_features, 0)  # (1, T, C, H, W)
-            audio_batch = np.expand_dims(audio_features, 0)    # (1, T, F)
             
-            # Some models expect concatenated or dict input
-            # For ONNX, we pass visual only if audio input not supported
             result = await engine.infer(
                 "lipinc_v2",
                 visual_batch,
@@ -391,16 +400,73 @@ class LipSyncAnalyzer(SubAnalyzer):
             # Extract manipulation probability
             if result.class_probabilities is not None:
                 probs = result.class_probabilities
-                # Class 1 = fake/manipulated
+                # Class 1 = fake/manipulated for dedicated lip-sync detector
                 fake_prob = float(probs[0, 1]) if probs.shape[-1] >= 2 else float(probs[0, 0])
             else:
                 fake_prob = float(result.predictions.mean())
             
             return fake_prob
-            
         except Exception as e:
-            logger.warning(f"LIPINC analysis failed: {e}")
-            # Fall back to correlation-based analysis
+            logger.warning(f"LIPINC analysis failed, using ai_real fallback: {e}")
+            return await self._run_ai_real_fallback(mouth_crops)
+
+    async def _run_ai_real_fallback(self, mouth_crops: List[np.ndarray]) -> float:
+        """
+        Fallback lip-sync score using ai_real_detector over mouth crops.
+        
+        Args:
+            mouth_crops: Original mouth crops
+            
+        Returns:
+            Mean fake probability across crops
+        """
+        from models.manager import get_model_manager
+        import torch
+        from PIL import Image as PILImage
+        
+        if not mouth_crops:
+            return 0.5
+        
+        pil_images = []
+        for crop in mouth_crops:
+            crop_np = crop
+            if crop_np.dtype in (np.float32, np.float64):
+                crop_np = np.clip(crop_np * 255.0 if crop_np.max() <= 1.0 else crop_np, 0, 255).astype(np.uint8)
+            else:
+                crop_np = crop_np.astype(np.uint8)
+            
+            if crop_np.ndim == 2:
+                crop_np = np.stack([crop_np] * 3, axis=-1)
+            pil_images.append(PILImage.fromarray(crop_np))
+        
+        try:
+            manager = get_model_manager()
+            model_session = await manager.get_model("ai_real_detector")
+            if model_session is None:
+                return 0.5
+            
+            model, processor = model_session
+            device = next(model.parameters()).device
+            inputs = processor(images=pil_images, return_tensors="pt")
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            with torch.no_grad():
+                outputs = model(**inputs)
+                probs_np = torch.nn.functional.softmax(outputs.logits, dim=-1).cpu().numpy()
+            
+            fake_idx = infer_fake_class_index(
+                id2label=getattr(model.config, "id2label", None),
+                class_labels=["human", "ai_generated"],
+                default_index=0
+            )
+            fake_probs = extract_fake_probabilities(
+                probs_np,
+                fake_class_index=fake_idx,
+                apply_confidence_shrinkage=True
+            )
+            return float(np.mean(fake_probs))
+        except Exception as fallback_error:
+            logger.warning(f"Lip-sync fallback failed: {fallback_error}")
             return 0.5
     
     def _compute_av_correlation(
@@ -502,12 +568,32 @@ class LipSyncAnalyzer(SubAnalyzer):
         Returns:
             Audio energy sequence
         """
-        # Sum across frequency bands
-        energy = np.sum(np.abs(audio_features), axis=1)
+        audio_arr = np.asarray(audio_features, dtype=np.float32)
+        if audio_arr.size == 0:
+            return np.array([0.0], dtype=np.float32)
+
+        if audio_arr.ndim == 1:
+            # Raw waveform case: compute short-window energy envelope.
+            if audio_arr.size <= 512:
+                energy = np.array([float(np.mean(np.abs(audio_arr)))], dtype=np.float32)
+            else:
+                win = max(256, min(2048, audio_arr.size // 20))
+                hop = max(1, win // 2)
+                chunks = []
+                for start in range(0, audio_arr.size - win + 1, hop):
+                    segment = audio_arr[start:start + win]
+                    chunks.append(float(np.mean(np.abs(segment))))
+                if not chunks:
+                    chunks = [float(np.mean(np.abs(audio_arr)))]
+                energy = np.asarray(chunks, dtype=np.float32)
+        else:
+            # Feature matrix case: sum across feature axis.
+            energy = np.sum(np.abs(audio_arr), axis=1).astype(np.float32)
         
         # Normalize
-        if energy.max() > 0:
-            energy = energy / energy.max()
+        max_val = float(np.max(energy)) if energy.size > 0 else 0.0
+        if max_val > 0.0:
+            energy = energy / max_val
         
         return energy
     
@@ -526,11 +612,20 @@ class LipSyncAnalyzer(SubAnalyzer):
         Returns:
             Resampled sequence
         """
+        if target_length <= 0:
+            return np.array([], dtype=np.float32)
+
+        if len(sequence) == 0:
+            return np.zeros(target_length, dtype=np.float32)
+
         if len(sequence) == target_length:
-            return sequence
+            return sequence.astype(np.float32)
+
+        if len(sequence) == 1:
+            return np.full(target_length, float(sequence[0]), dtype=np.float32)
         
         indices = np.linspace(0, len(sequence) - 1, target_length)
-        return np.interp(indices, np.arange(len(sequence)), sequence)
+        return np.interp(indices, np.arange(len(sequence)), sequence).astype(np.float32)
     
     def _estimate_av_offset(
         self,
