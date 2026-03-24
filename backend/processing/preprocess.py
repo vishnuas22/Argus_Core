@@ -15,6 +15,8 @@ Pipeline:
 
 from typing import Optional, Dict, Any
 import asyncio
+import io as io_module
+import numpy as np
 
 from config import config
 from schemas import (
@@ -191,33 +193,42 @@ class Preprocessor:
         audio_key = None
         
         if self.storage:
-            # Upload frames
+            # Upload frames as proper .npy files
             for i, frame in enumerate(video_data.frames):
                 key = f"{analysis_id}/frames/frame_{i:06d}.npy"
+                buffer = io_module.BytesIO()
+                np.save(buffer, frame)
+                buffer.seek(0)
                 await self.storage.upload_file(
-                    frame.tobytes(),
+                    buffer.read(),
                     config.minio_bucket_preprocessed,
                     key,
                     "application/octet-stream"
                 )
                 frame_keys.append(key)
             
-            # Upload face crops
+            # Upload face crops as proper .npy files
             for i, crop in enumerate(video_data.face_crops):
                 key = f"{analysis_id}/faces/face_{i:06d}.npy"
+                buffer = io_module.BytesIO()
+                np.save(buffer, crop)
+                buffer.seek(0)
                 await self.storage.upload_file(
-                    crop.tobytes(),
+                    buffer.read(),
                     config.minio_bucket_preprocessed,
                     key,
                     "application/octet-stream"
                 )
                 face_crop_keys.append(key)
             
-            # Upload audio if present
+            # Upload audio if present as proper .npy file
             if video_data.audio is not None:
                 audio_key = f"{analysis_id}/audio/track.npy"
+                buffer = io_module.BytesIO()
+                np.save(buffer, video_data.audio)
+                buffer.seek(0)
                 await self.storage.upload_file(
-                    video_data.audio.tobytes(),
+                    buffer.read(),
                     config.minio_bucket_preprocessed,
                     audio_key,
                     "application/octet-stream"
@@ -259,8 +270,11 @@ class Preprocessor:
         
         if self.storage:
             audio_key = f"{analysis_id}/audio/track.npy"
+            buffer = io_module.BytesIO()
+            np.save(buffer, audio_data.waveform.astype(np.float32))
+            buffer.seek(0)
             await self.storage.upload_file(
-                audio_data.waveform.tobytes(),
+                buffer.read(),
                 config.minio_bucket_preprocessed,
                 audio_key,
                 "application/octet-stream"
@@ -313,10 +327,14 @@ class Preprocessor:
         face_crop_keys = []
         
         if self.storage:
-            # Upload original image
+            # Upload original image as proper .npy format
+            import io
             key = f"{analysis_id}/frames/image.npy"
+            buffer = io.BytesIO()
+            np.save(buffer, img_array)
+            buffer.seek(0)
             await self.storage.upload_file(
-                img_array.tobytes(),
+                buffer.read(),
                 config.minio_bucket_preprocessed,
                 key,
                 "application/octet-stream"
@@ -326,8 +344,11 @@ class Preprocessor:
             # Upload face crops
             for i, crop in enumerate(face_crops):
                 key = f"{analysis_id}/faces/face_{i:06d}.npy"
+                buffer = io.BytesIO()
+                np.save(buffer, crop)
+                buffer.seek(0)
                 await self.storage.upload_file(
-                    crop.tobytes(),
+                    buffer.read(),
                     config.minio_bucket_preprocessed,
                     key,
                     "application/octet-stream"
