@@ -41,8 +41,8 @@ MAX_RETRIES = 3
 RETRY_DELAY_BASE = 1.0
 RETRY_DELAY_MAX = 10.0
 
-# Local storage fallback directory
-LOCAL_STORAGE_BASE = "/app/storage_fallback"
+# Local storage fallback directory - use current working directory or temp
+LOCAL_STORAGE_BASE = os.environ.get("LOCAL_STORAGE_PATH", os.path.join(os.getcwd(), "storage_fallback"))
 
 
 class LocalStorageClient:
@@ -193,6 +193,7 @@ class StorageClient(IStorage):
         self.access_key = access_key or config.minio_access_key
         self.secret_key = secret_key or config.minio_secret_key
         self.secure = secure or config.minio_secure
+        self.external_endpoint = os.environ.get("MINIO_EXTERNAL_ENDPOINT", "localhost:9000")
         
         self._client = None
         self._initialized = False
@@ -597,13 +598,16 @@ class StorageClient(IStorage):
         """
         Generate presigned URL for direct client access.
         
+        Rewrites the internal Docker hostname to the external endpoint
+        so that browser clients can access the URL.
+        
         Args:
             bucket: Bucket name
             object_key: Object key
             expires_seconds: URL validity duration (default 1 hour)
             
         Returns:
-            Presigned download URL
+            Presigned download URL accessible from browser
         """
         await self._ensure_bucket_exists(bucket)
         
@@ -614,6 +618,14 @@ class StorageClient(IStorage):
             object_key,
             expires=timedelta(seconds=expires_seconds)
         )
+        
+        # Rewrite internal Docker endpoint to external endpoint for browser access
+        if self.endpoint != self.external_endpoint:
+            url = url.replace(self.endpoint, self.external_endpoint)
+            # Also fix http:// to match the external access pattern
+            if self.external_endpoint.startswith("localhost"):
+                url = url.replace("http://localhost", "http://localhost")
+        
         return url
     
     async def delete_file(
