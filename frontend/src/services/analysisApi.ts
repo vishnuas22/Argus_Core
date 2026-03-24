@@ -20,7 +20,45 @@ import type {
   AnalysisOptions,
   HeatmapResponse,
   ListParams,
+  XAIHeatmapResponse,
+  XAIExplanation,
+  FeatureImportance,
+  VisualEvidence,
+  ScientificReference,
+  AudioArtifactRegion,
+  TokenAttribution,
+  ManipulationRegion,
+  EvidencePackage,
 } from '@/types/analysis';
+
+/**
+ * XAI response from backend
+ */
+export interface XAIResponse {
+  analysis_id: string;
+  image_xai?: {
+    explanation: XAIExplanation;
+    manipulation_regions: ManipulationRegion[];
+    heatmap_urls: string[];
+    overlay_url: string | null;
+  };
+  video_xai?: {
+    explanation: XAIExplanation;
+    manipulation_regions: ManipulationRegion[];
+    heatmap_urls: string[];
+    temporal_heatmap_url: string | null;
+  };
+  audio_xai?: {
+    explanation: XAIExplanation;
+    artifact_regions: AudioArtifactRegion[];
+    spectrogram_overlay_url: string | null;
+  };
+  text_xai?: {
+    explanation: XAIExplanation;
+    token_attributions: TokenAttribution[];
+  };
+  evidence_package?: EvidencePackage;
+}
 
 /**
  * Analysis API service object
@@ -160,6 +198,30 @@ export const analysisApi = {
     const response = await api.get<HeatmapResponse>(`/api/v1/analyze/${id}/heatmaps`);
     return response.data;
   },
+
+  /**
+   * Get XAI explanation data
+   * GET /api/v1/analyze/{id}/xai
+   * 
+   * @param id - Analysis ID
+   * @returns XAI response with explanations for all modalities
+   */
+  getXAI: async (id: string): Promise<XAIResponse> => {
+    const response = await api.get<XAIResponse>(`/api/v1/analyze/${id}/xai`);
+    return response.data;
+  },
+
+  /**
+   * Get XAI heatmaps with overlay URLs
+   * GET /api/v1/analyze/{id}/xai/heatmaps
+   * 
+   * @param id - Analysis ID
+   * @returns XAI heatmap response with overlay URLs
+   */
+  getXAIHeatmaps: async (id: string): Promise<XAIHeatmapResponse> => {
+    const response = await api.get<XAIHeatmapResponse>(`/api/v1/analyze/${id}/xai/heatmaps`);
+    return response.data;
+  },
 };
 
 /**
@@ -188,8 +250,13 @@ function transformDetailResponse(data: AnalysisDetailResponse | Record<string, u
     video_result: data.video_result as AnalysisDetailResponse['video_result'],
     audio_result: data.audio_result as AnalysisDetailResponse['audio_result'],
     text_result: data.text_result as AnalysisDetailResponse['text_result'],
+    image_result: data.image_result as AnalysisDetailResponse['image_result'],
     metadata_result: data.metadata_result as AnalysisDetailResponse['metadata_result'],
     processing_time_seconds: data.processing_time_seconds as number | undefined,
+    // XAI Enhancement Fields
+    evidence_package: data.evidence_package as AnalysisDetailResponse['evidence_package'],
+    feature_importance: (data.feature_importance || []) as AnalysisDetailResponse['feature_importance'],
+    scientific_references: (data.scientific_references || []) as AnalysisDetailResponse['scientific_references'],
   };
 }
 
