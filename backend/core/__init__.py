@@ -38,9 +38,14 @@ from core.explain import (
 from core.fusion import (
     MultiModalFusion,
     FusionConfig,
-    AttentionWeightComputer,
     UncertaintyEstimator,
     get_multi_modal_fusion
+)
+
+from core.cross_attention_fusion import (
+    CrossModalCrossAttentionFusion,
+    CrossAttentionConfig,
+    get_cross_attention_fusion,
 )
 
 from core.scorer import (
@@ -69,9 +74,11 @@ __all__ = [
     # Fusion
     "MultiModalFusion",
     "FusionConfig",
-    "AttentionWeightComputer",
     "UncertaintyEstimator",
     "get_multi_modal_fusion",
+    "CrossModalCrossAttentionFusion",
+    "CrossAttentionConfig",
+    "get_cross_attention_fusion",
     
     # Scorer
     "TrustScorer",

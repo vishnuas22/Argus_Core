@@ -29,7 +29,15 @@ import numpy as np
 from dataclasses import dataclass, field
 import time
 
-from analyzers.base import SubAnalyzer, normalize_scores, aggregate_scores, compute_confidence, detect_anomalies
+from analyzers.base import (
+    SubAnalyzer,
+    normalize_scores,
+    aggregate_scores,
+    compute_confidence,
+    detect_anomalies,
+    infer_fake_class_index,
+    extract_fake_probabilities,
+)
 from schemas.schemas import SpatialResult
 from config import config
 from utils.logging import get_logger
@@ -153,8 +161,8 @@ class SpatialAnalyzer(SubAnalyzer):
             List of model registry keys
         """
         return [
-            "efficientnet_b3_spatial",  # Primary spatial detector
-            "clip_vit_b16"              # CLIP for generalization
+            "ai_real_detector",  # Unified AI/Real image detection
+            "clip_vit_b16"       # CLIP for generalization
         ]
     
     async def analyze_frames(
@@ -294,7 +302,9 @@ class SpatialAnalyzer(SubAnalyzer):
         engine: "InferenceEngine"
     ) -> List[float]:
         """
-        Run EfficientNet-B3 for deepfake detection.
+        Run unified AI/Real detection model for spatial analysis.
+        
+        Uses the PyTorch model directly for accurate deepfake detection.
         
         Args:
             batch: Preprocessed batch (N, 3, H, W)
@@ -303,35 +313,62 @@ class SpatialAnalyzer(SubAnalyzer):
         Returns:
             List of fake probability scores
         """
+        from models.manager import get_model_manager
+        import torch
+        from PIL import Image as PILImage
+        
         scores = []
         
         try:
-            # Process in batches
-            for i in range(0, len(batch), self.batch_size):
-                chunk = batch[i:i + self.batch_size]
+            # Get the PyTorch model from the model manager
+            manager = get_model_manager()
+            model_session = await manager.get_model("ai_real_detector")
+            
+            if model_session is None:
+                logger.warning("AI detector model not available, using neutral scores")
+                return [0.5] * len(batch)
+            
+            model, processor = model_session
+            device = next(model.parameters()).device
+            
+            # Convert batch to PIL images for processor
+            # Batch is (N, 3, H, W) float32, need to convert to uint8 PIL images
+            pil_images = []
+            for i in range(len(batch)):
+                # Get single image (C, H, W)
+                img = batch[i]
+                # Convert CHW to HWC
+                img_hwc = np.transpose(img, (1, 2, 0))
+                # Denormalize: reverse the normalization
+                img_denorm = (img_hwc * self.std + self.mean) * 255
+                img_denorm = np.clip(img_denorm, 0, 255).astype(np.uint8)
+                pil_images.append(PILImage.fromarray(img_denorm))
+            
+            # Process images with the processor
+            inputs = processor(images=pil_images, return_tensors="pt")
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            # Run inference
+            with torch.no_grad():
+                outputs = model(**inputs)
+                logits = outputs.logits
+                probs = torch.nn.functional.softmax(logits, dim=-1)
                 
-                result = await engine.infer(
-                    "efficientnet_b3_spatial",
-                    chunk,
-                    batch_size=self.batch_size,
-                    return_probabilities=True
+                probs_np = probs.cpu().numpy()
+                fake_idx = infer_fake_class_index(
+                    id2label=getattr(model.config, "id2label", None),
+                    class_labels=["human", "ai_generated"],
+                    default_index=0
                 )
-                
-                # Extract fake class probability
-                if result.class_probabilities is not None:
-                    probs = result.class_probabilities
-                    if probs.shape[-1] >= 2:
-                        chunk_scores = probs[:, 1].tolist()
-                    else:
-                        chunk_scores = probs.flatten().tolist()
-                else:
-                    chunk_scores = result.predictions.flatten().tolist()
-                
-                scores.extend(chunk_scores)
+                fake_probs = extract_fake_probabilities(
+                    probs_np,
+                    fake_class_index=fake_idx,
+                    apply_confidence_shrinkage=True
+                )
+                scores = fake_probs.tolist()
                 
         except Exception as e:
-            logger.warning(f"EfficientNet inference failed: {e}")
-            # Return neutral scores on failure
+            logger.warning(f"Primary model inference failed: {e}")
             scores = [0.5] * len(batch)
         
         return scores
@@ -358,11 +395,16 @@ class SpatialAnalyzer(SubAnalyzer):
             result = await engine.infer(
                 "clip_vit_b16",
                 batch,
-                batch_size=self.batch_size,
+                # clip_vit_b16 ONNX in this stack is static-batch; force chunk size 1.
+                batch_size=1,
                 return_probabilities=False
             )
             
-            embeddings = result.predictions  # Shape: (N, embedding_dim)
+            embeddings = np.asarray(result.predictions, dtype=np.float32)
+            if embeddings.ndim == 1:
+                embeddings = np.expand_dims(embeddings, 0)
+            elif embeddings.ndim > 2:
+                embeddings = embeddings.reshape(embeddings.shape[0], -1)
             
             # Compute anomaly scores based on embedding statistics
             # Real faces cluster differently than fake faces in CLIP space
@@ -613,29 +655,40 @@ class SpatialAnalyzer(SubAnalyzer):
             
         Returns:
             List of heatmap URLs/keys
+            
+        Note:
+            Heatmap generation requires the XAI module to be properly configured.
+            Returns empty list if explainer is not available.
         """
         heatmap_urls = []
         
         # Limit number of heatmaps
         indices_to_process = anomaly_indices[:self.max_heatmaps]
         
+        if not explainer:
+            logger.warning("ExplainabilityEngine not available - skipping heatmap generation")
+            return heatmap_urls
+        
         for idx in indices_to_process:
             if idx >= len(images):
                 continue
             
             try:
-                # In production, this would:
-                # 1. Run forward pass with gradient tracking
-                # 2. Compute GradCAM using explainer
-                # 3. Upload heatmap to MinIO
-                # 4. Return URL/key
+                # Generate actual heatmap using explainer
+                heatmap = await explainer.generate_gradcam(
+                    model_name="deepfake_detector",
+                    input_image=images[idx],
+                    target_class=1  # Fake class
+                )
                 
-                # For now, create placeholder URL
-                heatmap_url = f"argus-results/heatmaps/frame_{idx}.png"
-                heatmap_urls.append(heatmap_url)
+                if heatmap is not None:
+                    # Upload to storage and get URL
+                    # For now, store the heatmap data reference
+                    heatmap_url = f"heatmap_frame_{idx}_{id(heatmap)}"
+                    heatmap_urls.append(heatmap_url)
                 
             except Exception as e:
-                logger.warning(f"Heatmap generation failed for frame {idx}: {e}")
+                logger.error(f"Heatmap generation failed for frame {idx}: {e}")
         
         return heatmap_urls
 

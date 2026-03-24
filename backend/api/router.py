@@ -325,8 +325,13 @@ async def get_analysis_detail(
         video_result=analysis.video_result,
         audio_result=analysis.audio_result,
         text_result=analysis.text_result,
+        image_result=getattr(analysis, 'image_result', None),
         metadata_result=analysis.metadata_result,
-        processing_time_seconds=analysis.processing_time_seconds
+        processing_time_seconds=analysis.processing_time_seconds,
+        # XAI Enhancement Fields
+        evidence_package=getattr(analysis, 'evidence_package', None),
+        feature_importance=getattr(analysis, 'feature_importance', []),
+        scientific_references=getattr(analysis, 'scientific_references', [])
     )
 
 
@@ -481,8 +486,11 @@ async def analyze_text(
         import hashlib
         text_hash = hashlib.sha256(text.encode()).hexdigest()
         
+        # Store text content for processing - use the actual storage path
+        text_storage_key = f"uploads/{analysis_id}/text_input.txt"
+        
         file_input = FileInput(
-            file_id=f"text/{analysis_id}",
+            file_id=text_storage_key,  # Must match the actual storage path
             file_type="text/plain",
             original_filename="text_input.txt",
             file_hash=text_hash,
@@ -829,6 +837,154 @@ async def get_heatmaps(
     except Exception as e:
         logger.warning(f"Failed to list heatmaps: {e}")
         return {"heatmaps": [], "count": 0}
+
+
+@router.get(
+    "/analyze/{analysis_id}/xai",
+    summary="Get XAI explanations",
+    description="Get Explainable AI explanations including feature importance, scientific references, and evidence package",
+    responses={
+        200: {"description": "XAI data for the analysis"},
+        404: {"model": ErrorResponse, "description": "Analysis not found"}
+    }
+)
+async def get_xai_explanations(
+    analysis_id: str = Path(..., description="Analysis ID"),
+    db: DatabaseClient = Depends(get_db),
+    storage: StorageClient = Depends(get_storage)
+):
+    """Get XAI explanations, feature importance, and evidence package."""
+    analysis = await db.get_analysis(analysis_id)
+
+    if analysis is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "ANALYSIS_NOT_FOUND", "message": f"Analysis not found: {analysis_id}"}
+        )
+
+    # Build XAI response from AnalysisDocument fields
+    explanation = analysis.explanation
+    evidence_pkg = analysis.evidence_package
+
+    xai_response = {
+        "analysis_id": analysis_id,
+        "image_xai": None,
+        "video_xai": None,
+        "audio_xai": None,
+        "text_xai": None,
+        "evidence_package": evidence_pkg.model_dump() if evidence_pkg else None,
+    }
+
+    summary_text = explanation.summary if explanation else ""
+    confidence_rationale = explanation.confidence_rationale if explanation else ""
+    methodology = explanation.methodology_used if explanation else []
+
+    # Populate image XAI
+    if analysis.image_result:
+        img = analysis.image_result
+        xai_response["image_xai"] = {
+            "explanation": {
+                "summary": summary_text,
+                "confidence_rationale": confidence_rationale,
+                "methodology_used": methodology,
+            },
+            "manipulation_regions": [
+                mr.model_dump() for mr in (img.manipulation_regions or [])
+            ],
+            "heatmap_urls": [img.heatmap_url] if img.heatmap_url else [],
+            "overlay_url": img.heatmap_url,
+        }
+
+    # Populate video XAI
+    if analysis.video_result:
+        vid = analysis.video_result
+        xai_response["video_xai"] = {
+            "explanation": {
+                "summary": summary_text,
+                "confidence_rationale": confidence_rationale,
+                "methodology_used": methodology,
+            },
+            "manipulation_regions": [],
+            "heatmap_urls": vid.frame_heatmap_urls or [],
+            "temporal_heatmap_url": vid.temporal_heatmap_url,
+        }
+
+    # Populate audio XAI
+    if analysis.audio_result:
+        aud = analysis.audio_result
+        xai_response["audio_xai"] = {
+            "explanation": {
+                "summary": summary_text,
+                "confidence_rationale": confidence_rationale,
+                "methodology_used": methodology,
+            },
+            "artifact_regions": [
+                ar.model_dump() for ar in (aud.artifact_regions or [])
+            ],
+            "spectrogram_overlay_url": aud.spectrogram_url,
+        }
+
+    # Populate text XAI
+    if analysis.text_result:
+        txt = analysis.text_result
+        xai_response["text_xai"] = {
+            "explanation": {
+                "summary": summary_text,
+                "confidence_rationale": confidence_rationale,
+                "methodology_used": methodology,
+            },
+            "token_attributions": [
+                ta.model_dump() for ta in (txt.token_attributions or [])
+            ],
+        }
+
+    return xai_response
+
+
+@router.get(
+    "/analyze/{analysis_id}/xai/heatmaps",
+    summary="Get XAI heatmap overlays",
+    description="Get heatmap overlay URLs for XAI visualization",
+    responses={
+        200: {"description": "XAI heatmap URLs"},
+        404: {"model": ErrorResponse, "description": "Analysis not found"}
+    }
+)
+async def get_xai_heatmaps(
+    analysis_id: str = Path(..., description="Analysis ID"),
+    db: DatabaseClient = Depends(get_db),
+    storage: StorageClient = Depends(get_storage)
+):
+    """Get XAI heatmap overlay URLs from the evidence package."""
+    analysis = await db.get_analysis(analysis_id)
+
+    if analysis is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "ANALYSIS_NOT_FOUND", "message": f"Analysis not found: {analysis_id}"}
+        )
+
+    heatmaps = []
+
+    # Get heatmaps from evidence package
+    if analysis.evidence_package and analysis.evidence_package.visual_evidence:
+        for ve in analysis.evidence_package.visual_evidence:
+            if ve.artifact_type in ("heatmap", "overlay"):
+                heatmaps.append({
+                    "type": ve.artifact_type,
+                    "url": ve.url,
+                    "description": ve.description,
+                })
+
+    # Also include direct heatmap URL from image result
+    if analysis.image_result and analysis.image_result.heatmap_url:
+        heatmaps.append({
+            "type": "gradcam_overlay",
+            "url": analysis.image_result.heatmap_url,
+            "description": "GradCAM++ attention overlay",
+        })
+
+    return {"heatmaps": heatmaps, "count": len(heatmaps)}
 
 
 # Export router
