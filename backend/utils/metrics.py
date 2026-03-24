@@ -30,6 +30,34 @@ http_requests_total = Counter(
     ["method", "endpoint", "status_code"]
 )
 
+# ============== MODEL MONITORING ==============
+
+model_load_total = Counter(
+    "argus_model_load_total",
+    "Total model load attempts",
+    ["model_name", "status"]
+)
+
+model_inference_total = Counter(
+    "argus_model_inference_total",
+    "Total model inference calls",
+    ["model_name", "status"]
+)
+
+model_confidence_histogram = Histogram(
+    "argus_model_confidence",
+    "Model prediction confidence distribution",
+    ["model_name"],
+    buckets=(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+)
+
+model_latency_seconds = Histogram(
+    "argus_model_latency_seconds",
+    "Model inference latency with percentiles",
+    ["model_name"],
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
+)
+
 # ============== HISTOGRAMS ==============
 
 analysis_duration_seconds = Histogram(
@@ -75,6 +103,12 @@ queue_size = Gauge(
     "argus_queue_size",
     "Number of jobs in queue",
     ["queue_name"]
+)
+
+model_loaded = Gauge(
+    "argus_model_loaded",
+    "Whether a model is currently loaded",
+    ["model_name"]
 )
 
 
@@ -136,3 +170,40 @@ def init_app_info(version: str, environment: str) -> None:
         "environment": environment,
         "service": "argus-core"
     })
+
+
+# ============== MODEL MONITORING HELPERS ==============
+
+def record_model_load(model_name: str, success: bool) -> None:
+    """Record model load attempt."""
+    status = "success" if success else "failure"
+    model_load_total.labels(model_name=model_name, status=status).inc()
+    model_loaded.labels(model_name=model_name).set(1 if success else 0)
+
+
+def record_model_inference(
+    model_name: str,
+    success: bool,
+    latency_seconds: float,
+    confidence: Optional[float] = None
+) -> None:
+    """
+    Record model inference metrics.
+    
+    Args:
+        model_name: Name of the model
+        success: Whether inference succeeded
+        latency_seconds: Inference latency in seconds
+        confidence: Optional prediction confidence (0-1)
+    """
+    status = "success" if success else "failure"
+    model_inference_total.labels(model_name=model_name, status=status).inc()
+    model_latency_seconds.labels(model_name=model_name).observe(latency_seconds)
+    
+    if confidence is not None and success:
+        model_confidence_histogram.labels(model_name=model_name).observe(confidence)
+
+
+def record_model_unload(model_name: str) -> None:
+    """Record model unload event."""
+    model_loaded.labels(model_name=model_name).set(0)
