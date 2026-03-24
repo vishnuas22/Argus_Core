@@ -33,13 +33,19 @@ from dataclasses import dataclass, field
 import time
 from collections import Counter
 
-from analyzers.base import BaseAnalyzer, compute_confidence
+from analyzers.base import (
+    BaseAnalyzer,
+    compute_confidence,
+    infer_fake_class_index,
+    extract_fake_probabilities,
+)
 from schemas.schemas import (
     Modality, PreprocessedData, ModalityResult, ContentType, TextResult
 )
 from config import config
 from utils.logging import get_logger
 from utils.errors import ValidationError, InferenceError
+from models.model_init import ensure_models_for_analyzer, is_model_ready
 
 if TYPE_CHECKING:
     from core.engine import InferenceEngine
@@ -155,8 +161,9 @@ class TextAnalysisDetails:
     Contains all intermediate analysis features for transparency.
     """
     # Neural detector scores
-    radar_score: Optional[float] = None  # RADAR classifier score
-    gpt2_detector_score: float = 0.0  # GPT-2 based detector
+    roberta_score: float = 0.0  # Primary: RoBERTa-base OpenAI Detector
+    radar_score: Optional[float] = None  # Legacy: RADAR classifier score
+    gpt2_detector_score: float = 0.0  # Secondary: GPT-2 based detector
     
     # Feature-based analysis
     perplexity_features: Optional[PerplexityFeatures] = None
@@ -169,10 +176,12 @@ class TextAnalysisDetails:
     word_count: int = 0
     sentence_count: int = 0
     language_detected: str = "en"
+    primary_detector: str = "roberta"  # Which detector was used as primary
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for ModalityResult details."""
         return {
+            "roberta_score": round(self.roberta_score, 4),
             "radar_score": round(self.radar_score, 4) if self.radar_score else None,
             "gpt2_detector_score": round(self.gpt2_detector_score, 4),
             "perplexity_features": self.perplexity_features.to_dict() if self.perplexity_features else None,
@@ -182,7 +191,8 @@ class TextAnalysisDetails:
             "text_length": self.text_length,
             "word_count": self.word_count,
             "sentence_count": self.sentence_count,
-            "language_detected": self.language_detected
+            "language_detected": self.language_detected,
+            "primary_detector": self.primary_detector
         }
 
 
@@ -238,10 +248,10 @@ class TextAnalyzer(BaseAnalyzer):
         
         # Weight configuration for ensemble
         self.weights = {
-            "radar": 0.40,  # Primary neural detector
-            "perplexity": 0.25,  # Perplexity analysis
-            "burstiness": 0.20,  # Burstiness analysis
-            "vocabulary": 0.15   # Vocabulary diversity
+            "roberta": 0.35,  # Primary: RoBERTa-base OpenAI Detector
+            "perplexity": 0.35,  # Perplexity analysis (increased weight)
+            "burstiness": 0.18,  # Burstiness analysis
+            "vocabulary": 0.12   # Vocabulary diversity
         }
         
         logger.info(
@@ -257,8 +267,8 @@ class TextAnalyzer(BaseAnalyzer):
             List of model registry keys
         """
         return [
-            "radar_text_detector",  # RADAR adversarial detector
-            "gpt2_perplexity"       # GPT-2 for perplexity scoring
+            "roberta_ai_detector",  # Primary: RoBERTa-base OpenAI Detector
+            "gpt2_perplexity"       # Secondary: GPT-2 for perplexity scoring
         ]
     
     def validate_input(self, data: PreprocessedData) -> None:
@@ -366,20 +376,30 @@ class TextAnalyzer(BaseAnalyzer):
         stylistic_features = self.compute_stylistic_features(text, words, sentences)
         details.stylistic_features = stylistic_features
         
-        # 5. Run RADAR neural detector (if available)
-        radar_score = await self._run_radar_detector(text, engine)
-        details.radar_score = radar_score
+        # 5. Primary: Run RoBERTa AI detector
+        roberta_score = 0.5
+        use_roberta = False
+        try:
+            roberta_score = await self._run_roberta_detector(text, engine)
+            details.roberta_score = roberta_score
+            details.primary_detector = "roberta"
+            use_roberta = True
+            logger.info(f"RoBERTa detection: ai_prob={roberta_score:.4f}")
+        except Exception as e:
+            logger.warning(f"RoBERTa detection failed, using perplexity fallback: {e}")
+            details.primary_detector = "perplexity"
         
-        # 6. Run GPT-2 based detector
+        # 6. Secondary: Run GPT-2 based perplexity detector
         gpt2_score = await self._run_gpt2_detector(text, engine)
         details.gpt2_detector_score = gpt2_score
         
         # 7. Compute ensemble score
         ai_probability = self._compute_ensemble_score(
-            radar_score,
+            roberta_score,
             perplexity_features,
             burstiness_features,
-            vocabulary_features
+            vocabulary_features,
+            use_roberta=use_roberta
         )
         
         inference_time = (time.time() - start_time) * 1000
@@ -396,7 +416,7 @@ class TextAnalyzer(BaseAnalyzer):
             ai_probability=ai_probability,
             perplexity_score=perplexity_features.mean_perplexity,
             burstiness_score=burstiness_features.burstiness_score,
-            radar_score=radar_score
+            radar_score=details.radar_score
         )
         
         return text_result, details
@@ -688,7 +708,7 @@ class TextAnalyzer(BaseAnalyzer):
         engine: "InferenceEngine"
     ) -> Optional[float]:
         """
-        Run RADAR neural detector.
+        Run RADAR neural detector (legacy fallback).
         
         RADAR is adversarially trained to be robust against
         paraphrasing and other evasion techniques.
@@ -709,24 +729,146 @@ class TextAnalyzer(BaseAnalyzer):
             batch = np.expand_dims(tokens, 0).astype(np.int64)
             
             result = await engine.infer(
-                "radar_text_detector",
+                "radar_text",
                 batch,
                 return_probabilities=True
             )
             
-            # Extract AI probability
-            if result.class_probabilities is not None:
-                probs = result.class_probabilities
-                # Assuming class 1 is AI-generated
-                ai_prob = float(probs[0, 1]) if probs.shape[-1] >= 2 else float(probs[0, 0])
-            else:
-                ai_prob = float(result.predictions.mean())
-            
-            return ai_prob
+            return self._extract_ai_probability(
+                result.class_probabilities
+                if result.class_probabilities is not None
+                else result.predictions
+            )
             
         except Exception as e:
             logger.warning(f"RADAR detector failed: {e}")
             return None
+    
+    async def _run_roberta_detector(
+        self,
+        text: str,
+        engine: "InferenceEngine"
+    ) -> float:
+        """
+        Run ModernBERT AI Detector.
+        
+        ModernBERT-base fine-tuned for AI text detection.
+        This is the primary detector with real model weights.
+        
+        Args:
+            text: Input text
+            engine: InferenceEngine
+            
+        Returns:
+            AI probability [0, 1]
+        """
+        try:
+            # Get proper tokenization with attention mask
+            input_ids, attention_mask = self._prepare_text_with_attention(text, max_length=512)
+            
+            # Run inference with both inputs
+            result = await engine.infer(
+                "roberta_ai_detector",
+                {"input_ids": input_ids, "attention_mask": attention_mask},
+                return_probabilities=True
+            )
+            
+            # Extract AI probability robustly across possible model output shapes.
+            ai_prob = self._extract_ai_probability(
+                result.class_probabilities
+                if result.class_probabilities is not None
+                else result.predictions
+            )
+            
+            logger.debug(f"ModernBERT detector result: ai_prob={ai_prob:.4f}")
+            return ai_prob
+            
+        except ImportError as e:
+            logger.error(f"ModernBERT dependencies missing: {e}")
+            raise InferenceError("roberta_ai_detector", f"Missing dependencies: {e}")
+        except RuntimeError as e:
+            logger.error(f"ModernBERT ONNX runtime error: {e}")
+            raise InferenceError("roberta_ai_detector", f"Runtime error: {e}")
+        except ValueError as e:
+            logger.error(f"ModernBERT input validation error: {e}")
+            raise InferenceError("roberta_ai_detector", f"Invalid input: {e}")
+        except Exception as e:
+            logger.error(f"ModernBERT detector failed: {type(e).__name__}: {e}")
+            raise InferenceError("roberta_ai_detector", f"Unexpected error: {type(e).__name__}: {e}")
+
+    def _extract_ai_probability(self, outputs: Any) -> float:
+        """
+        Extract AI-generated probability from model outputs with flexible shape handling.
+
+        Supports outputs shaped as:
+        - (B, C)
+        - (B, 1, C)
+        - (C,)
+        - logits or probabilities
+        """
+        arr = np.asarray(outputs, dtype=np.float32)
+
+        if arr.size == 0:
+            return 0.5
+
+        if arr.ndim == 1:
+            arr = np.expand_dims(arr, 0)
+        else:
+            # Preserve class axis (last axis), flatten remaining leading axes.
+            num_classes = arr.shape[-1]
+            arr = arr.reshape(-1, num_classes)
+
+        if arr.shape[1] < 2:
+            # Binary classifier expected; fallback to bounded mean if malformed.
+            return float(np.clip(np.mean(arr), 0.0, 1.0))
+
+        # Convert logits to probabilities if needed.
+        row_sums = arr.sum(axis=-1)
+        looks_like_probs = (
+            arr.min() >= 0.0 and
+            arr.max() <= 1.0 and
+            np.allclose(row_sums, 1.0, atol=1e-2)
+        )
+        if looks_like_probs:
+            probs = arr
+        else:
+            shifted = arr - np.max(arr, axis=-1, keepdims=True)
+            exp_arr = np.exp(shifted)
+            probs = exp_arr / np.sum(exp_arr, axis=-1, keepdims=True)
+
+        ai_idx = infer_fake_class_index(
+            class_labels=["human", "ai_generated"],
+            default_index=1
+        )
+        ai_probs = extract_fake_probabilities(
+            probs,
+            fake_class_index=ai_idx,
+            apply_confidence_shrinkage=True
+        )
+        return float(np.mean(ai_probs))
+    
+    def _prepare_text_with_attention(self, text: str, max_length: int = 512) -> tuple:
+        """Prepare text with both input_ids and attention_mask for transformer models."""
+        try:
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base")
+            encoding = tokenizer(
+                text,
+                max_length=max_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="np"
+            )
+            return (
+                encoding["input_ids"].astype(np.int64),
+                encoding["attention_mask"].astype(np.int64)
+            )
+        except Exception as e:
+            logger.warning(f"Tokenizer unavailable, using fallback: {e}")
+            tokens = self._fallback_tokenization(text, max_length)
+            attention_mask = np.ones_like(tokens)
+            attention_mask[tokens == 0] = 0
+            return np.expand_dims(tokens, 0), np.expand_dims(attention_mask, 0)
     
     async def _run_gpt2_detector(
         self,
@@ -756,11 +898,11 @@ class TextAnalyzer(BaseAnalyzer):
                 return_probabilities=True
             )
             
-            if result.class_probabilities is not None:
-                probs = result.class_probabilities
-                return float(probs[0, 1]) if probs.shape[-1] >= 2 else float(probs[0, 0])
-            
-            return float(result.predictions.mean())
+            return self._extract_ai_probability(
+                result.class_probabilities
+                if result.class_probabilities is not None
+                else result.predictions
+            )
             
         except Exception as e:
             logger.debug(f"GPT-2 detector skipped: {e}")
@@ -774,49 +916,59 @@ class TextAnalyzer(BaseAnalyzer):
     
     def _prepare_text_for_model(self, text: str, max_length: int = 512) -> np.ndarray:
         """
-        Prepare text for neural model input.
+        Prepare text for neural model input using proper BPE tokenization.
         
-        Simple tokenization (would use proper tokenizer in production).
+        Uses transformers library tokenizer for ModernBERT/RoBERTa compatibility.
         
         Args:
             text: Input text
             max_length: Maximum sequence length
             
         Returns:
-            Token IDs array
+            Token IDs array with shape [max_length]
         """
-        # Simple character-level tokenization as placeholder
-        # In production, would use BPE/SentencePiece tokenizer
-        
-        # Clean text
-        text = text.strip()[:max_length * 4]  # Rough character limit
-        
-        # Convert to token IDs (simple ASCII-based)
+        try:
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base")
+            encoding = tokenizer(
+                text,
+                max_length=max_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="np"
+            )
+            return encoding["input_ids"][0].astype(np.int64)
+        except Exception as e:
+            logger.warning(f"Tokenizer not available, using fallback: {e}")
+            return self._fallback_tokenization(text, max_length)
+    
+    def _fallback_tokenization(self, text: str, max_length: int = 512) -> np.ndarray:
+        """Fallback tokenization when transformers tokenizer is unavailable."""
+        text = text.strip()[:max_length * 4]
         tokens = [ord(c) % 30000 for c in text[:max_length]]
-        
-        # Pad to fixed length
         if len(tokens) < max_length:
             tokens.extend([0] * (max_length - len(tokens)))
         else:
             tokens = tokens[:max_length]
-        
         return np.array(tokens, dtype=np.int64)
     
     def _compute_ensemble_score(
         self,
-        radar_score: Optional[float],
+        roberta_score: float,
         perplexity: PerplexityFeatures,
         burstiness: BurstinessFeatures,
-        vocabulary: VocabularyFeatures
+        vocabulary: VocabularyFeatures,
+        use_roberta: bool = True
     ) -> float:
         """
         Compute ensemble AI probability score.
         
         Args:
-            radar_score: RADAR detector score (may be None)
+            roberta_score: RoBERTa detector score (primary)
             perplexity: Perplexity features
             burstiness: Burstiness features
             vocabulary: Vocabulary features
+            use_roberta: Whether RoBERTa was successfully used
             
         Returns:
             Ensemble AI probability [0, 1]
@@ -824,20 +976,24 @@ class TextAnalyzer(BaseAnalyzer):
         scores = {}
         weights = dict(self.weights)
         
-        # RADAR score (if available)
-        if radar_score is not None:
-            scores["radar"] = radar_score
+        # RoBERTa score (primary detector)
+        if use_roberta:
+            scores["roberta"] = roberta_score
         else:
-            # Redistribute weight
-            weights["perplexity"] += weights["radar"] * 0.5
-            weights["burstiness"] += weights["radar"] * 0.5
-            weights["radar"] = 0
+            # Redistribute weight to feature-based methods
+            weights["perplexity"] += weights["roberta"] * 0.5
+            weights["burstiness"] += weights["roberta"] * 0.3
+            weights["vocabulary"] += weights["roberta"] * 0.2
+            weights["roberta"] = 0
         
         # Perplexity score
         # Low perplexity = likely AI
-        # Normalize to probability
-        perp_normalized = 1.0 - min(1.0, perplexity.mean_perplexity / 200)
-        perp_score = perp_normalized * 0.6 + perplexity.low_perplexity_ratio * 0.4
+        # Sigmoid calibration: maps perplexity to AI probability smoothly
+        # Center at 80 (typical human text), steepness 0.03
+        # Low perplexity (<50) -> high AI prob (>0.7)
+        # Medium perplexity (80) -> moderate AI prob (~0.5)
+        # High perplexity (>120) -> low AI prob (<0.3)
+        perp_score = 1.0 / (1.0 + np.exp(0.03 * (perplexity.mean_perplexity - 80.0)))
         scores["perplexity"] = perp_score
         
         # Burstiness score
@@ -878,13 +1034,13 @@ class TextAnalyzer(BaseAnalyzer):
         # Length factor
         length_factor = min(1.0, details.text_length / OPTIMAL_TEXT_LENGTH)
         
-        # RADAR availability factor
-        radar_factor = 0.8 if details.radar_score is not None else 0.5
+        # Primary detector factor (RoBERTa is more reliable)
+        detector_factor = 0.9 if details.primary_detector == "roberta" else 0.6
         
         # Score extremity factor
         scores = []
-        if details.radar_score is not None:
-            scores.append(details.radar_score)
+        if details.roberta_score > 0:
+            scores.append(details.roberta_score)
         if details.perplexity_features:
             scores.append(1.0 - min(1.0, details.perplexity_features.mean_perplexity / 200))
         
@@ -896,7 +1052,7 @@ class TextAnalyzer(BaseAnalyzer):
         
         confidence = (
             0.4 * length_factor +
-            0.3 * radar_factor +
+            0.3 * detector_factor +
             0.3 * extremity
         )
         

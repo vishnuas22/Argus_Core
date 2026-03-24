@@ -52,17 +52,21 @@ class PlattParams:
     b: float = 0.0   # Default: centered at 0.5
     
     def transform(self, score: float) -> float:
-        """Apply Platt transformation."""
-        return 1.0 / (1.0 + np.exp(self.a * (score - 0.5) + self.b))
+        """Apply Platt transformation. Uses |a| to ensure proper sharpening."""
+        a_abs = abs(self.a)
+        return 1.0 / (1.0 + np.exp(-a_abs * (score - 0.5) + self.b))
 
 
 # Default Platt parameters per content type (pre-calibrated)
+# NOTE: Platt calibration with negative 'a' inverts the sigmoid and flattens
+# the signal toward 0.5, making the system indecisive. Set a=1.0 to enable
+# normal sharpening sigmoid, or set use_platt_calibration=False to disable.
 DEFAULT_PLATT_PARAMS = {
-    ContentType.VIDEO_WITH_SPEECH: PlattParams(a=-2.5, b=0.1),
-    ContentType.VIDEO_NO_SPEECH: PlattParams(a=-2.2, b=0.0),
-    ContentType.AUDIO_ONLY: PlattParams(a=-2.8, b=-0.1),
-    ContentType.IMAGE_ONLY: PlattParams(a=-2.0, b=0.0),
-    ContentType.TEXT_ONLY: PlattParams(a=-1.8, b=0.2),
+    ContentType.VIDEO_WITH_SPEECH: PlattParams(a=1.0, b=0.0),
+    ContentType.VIDEO_NO_SPEECH: PlattParams(a=1.0, b=0.0),
+    ContentType.AUDIO_ONLY: PlattParams(a=1.0, b=0.0),
+    ContentType.IMAGE_ONLY: PlattParams(a=1.0, b=0.0),
+    ContentType.TEXT_ONLY: PlattParams(a=1.0, b=0.0),
 }
 
 
@@ -115,7 +119,7 @@ class VerdictThresholds:
 class ScoringConfig:
     """Configuration for scoring system."""
     # Score transformation
-    use_platt_calibration: bool = True
+    use_platt_calibration: bool = False  # Disabled: Platt with negative 'a' flattens signal
     score_power: float = 1.0  # Power transform for score distribution
     
     # Uncertainty handling
@@ -203,12 +207,14 @@ class TrustScorer:
         # Invert: Trust Score is authenticity (100 = authentic, 0 = fake)
         # Raw score is manipulation probability
         authenticity_prob = 1.0 - raw_score
+        calibration_applied = False
         
         # Apply Platt calibration if enabled
         if self.config.use_platt_calibration and content_type:
             authenticity_prob = self.calibrate_probability(
                 authenticity_prob, content_type
             )
+            calibration_applied = True
         
         # Apply power transform for score distribution
         if self.config.score_power != 1.0:
@@ -217,11 +223,9 @@ class TrustScorer:
         # Convert to 0-100 scale
         score_value = authenticity_prob * 100.0
         
-        # Apply uncertainty penalty
-        if uncertainty > self.config.uncertainty_penalty:
-            # Move score toward 50 (uncertain) based on uncertainty
-            pull_strength = min(uncertainty, 0.5) * 2  # Max 100% pull at 0.5 uncertainty
-            score_value = score_value + (50 - score_value) * pull_strength * 0.5
+        # NOTE: Uncertainty penalty removed to avoid double-counting.
+        # The image analyzer already reduces confidence when signals disagree.
+        # Applying penalty again in the scorer over-penalizes disagreement.
         
         # Clamp to bounds
         score_value = float(np.clip(
@@ -237,7 +241,7 @@ class TrustScorer:
         trust_score = TrustScore(
             value=round(score_value, 1),
             confidence=round(confidence, 3),
-            calibrated=self.config.use_platt_calibration
+            calibrated=calibration_applied
         )
         
         # Determine verdict
@@ -290,11 +294,14 @@ class TrustScorer:
         Confidence represents how reliable the score is, based on:
         - Number of modalities analyzed
         - Individual modality confidences
-        - Ensemble uncertainty
+        - Score extremity (confident predictions get higher confidence)
+        
+        Note: Uncertainty is already factored into modality confidences,
+        so we don't double-penalize here.
         
         Args:
             aggregated: Aggregated result
-            uncertainty: Fusion uncertainty
+            uncertainty: Fusion uncertainty (used for context, not penalty)
             
         Returns:
             Confidence score (0-1)
@@ -307,14 +314,23 @@ class TrustScorer:
             base_confidence = 0.5
         
         # Adjust for number of modalities
+        # Single modality should still allow high confidence if the model is certain
         num_modalities = len(aggregated.modality_results)
-        modality_factor = min(1.0, 0.5 + 0.1 * num_modalities)
+        if num_modalities >= 3:
+            modality_factor = 1.0
+        elif num_modalities == 2:
+            modality_factor = 0.95
+        else:
+            # Single modality - allow up to 0.9 confidence
+            modality_factor = 0.9
         
-        # Adjust for uncertainty
-        uncertainty_factor = 1.0 - uncertainty
+        # Score extremity factor - predictions near 0 or 1 are more confident
+        score_extremity = abs(aggregated.fused_score - 0.5) * 2
+        extremity_factor = 0.85 + 0.15 * score_extremity
         
-        # Combine factors
-        confidence = base_confidence * modality_factor * uncertainty_factor
+        # Combine factors - don't apply uncertainty penalty again
+        # as it's already in the modality confidence
+        confidence = base_confidence * modality_factor * extremity_factor
         
         return float(np.clip(confidence, 0.1, 0.95))
     

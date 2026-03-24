@@ -20,8 +20,8 @@ node_modules/
 /coverage
 
 # Next.js
-/.next/
-/out/
+.next/
+out/
 next-env.d.ts
 *.tsbuildinfo
 
@@ -41,6 +41,7 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 dump.rdb
+
 
 # System files
 .DS_Store
@@ -75,6 +76,12 @@ agenthub/agents/youtube/db
 
 # Build caches
 .cache/
+*.pack.gz
 
 # Mobile development
 android-sdk/ 
+
+# Test samples (optional)
+test_samples/
+Video_sample/
+Image_sample/

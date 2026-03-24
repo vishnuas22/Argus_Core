@@ -615,12 +615,14 @@ class VideoAnalyzer(BaseAnalyzer):
         
         # Lipsync confidence
         if result.lip_sync:
-            lipsync_conf = 1.0 - abs(result.lip_sync.sync_score - 0.5) * 2
+            # Extremity from 0.5 indicates stronger evidence (high confidence).
+            lipsync_conf = abs(result.lip_sync.sync_score - 0.5) * 2
             confidences.append(lipsync_conf)
         
         if confidences:
             # Use harmonic mean for conservative estimate
-            return float(len(confidences) / sum(1/c for c in confidences))
+            safe_confidences = [max(1e-6, float(c)) for c in confidences]
+            return float(len(safe_confidences) / sum(1.0 / c for c in safe_confidences))
         
         return 0.5
     
@@ -631,8 +633,7 @@ class VideoAnalyzer(BaseAnalyzer):
         """
         Load frames from MinIO keys.
         
-        In production, fetches from object storage.
-        For development, generates placeholder frames.
+        Fetches preprocessed frame data from object storage.
         
         Args:
             frame_keys: List of MinIO object keys
@@ -640,17 +641,44 @@ class VideoAnalyzer(BaseAnalyzer):
         Returns:
             List of loaded frame arrays (H, W, 3)
         """
-        # TODO: Integrate with StorageClient for actual loading
-        # For now, return placeholder data
+        import io as io_module
+        from storage.storage import get_storage_client
+        from config import config
+        
         frames = []
         
-        for key in frame_keys[:100]:  # Limit to 100 frames
-            # In production:
-            # image_bytes = await storage.download_file("argus-preprocessed", key)
-            # frame = load_image(image_bytes)
-            placeholder = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
-            frames.append(placeholder)
+        if not frame_keys:
+            logger.warning("No frame keys provided for loading")
+            return frames
         
+        try:
+            storage = get_storage_client()
+            
+            for key in frame_keys[:100]:  # Limit to 100 frames
+                try:
+                    frame_bytes = await storage.download_file(
+                        config.minio_bucket_preprocessed,
+                        key
+                    )
+                    
+                    if key.endswith('.npy'):
+                        frame_array = np.load(io_module.BytesIO(frame_bytes), allow_pickle=True)
+                        if frame_array.dtype == object:
+                            if hasattr(frame_array, 'item') and isinstance(frame_array.item(), np.ndarray):
+                                frame_array = frame_array.item()
+                        frames.append(frame_array)
+                    else:
+                        frame = np.frombuffer(frame_bytes, dtype=np.uint8)
+                        frames.append(frame)
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to load frame {key}: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Failed to initialize storage for frame loading: {e}")
+        
+        logger.info(f"Loaded {len(frames)} frames from storage")
         return frames
     
     async def _load_audio_features(
@@ -666,17 +694,33 @@ class VideoAnalyzer(BaseAnalyzer):
         Returns:
             Audio features array (T, F) or None
         """
+        import io as io_module
+        from storage.storage import get_storage_client
+        from config import config
+        
         if not audio_key:
             return None
         
-        # TODO: Integrate with StorageClient
-        # For now, return placeholder
-        # In production:
-        # features_bytes = await storage.download_file("argus-preprocessed", audio_key)
-        # features = np.load(io.BytesIO(features_bytes))
-        
-        # Placeholder: 16 time steps, 80 mel bands
-        return np.random.randn(16, 80).astype(np.float32)
+        try:
+            storage = get_storage_client()
+            
+            audio_bytes = await storage.download_file(
+                config.minio_bucket_preprocessed,
+                audio_key
+            )
+            
+            if audio_key.endswith('.npy'):
+                features = np.load(io_module.BytesIO(audio_bytes), allow_pickle=True)
+                if features.dtype == object:
+                    if hasattr(features, 'item') and isinstance(features.item(), np.ndarray):
+                        features = features.item()
+                return features
+            else:
+                return np.frombuffer(audio_bytes, dtype=np.float32)
+                
+        except Exception as e:
+            logger.warning(f"Failed to load audio features {audio_key}: {e}")
+            return None
     
     def _create_empty_result(self) -> VideoResult:
         """Create empty result for insufficient data."""

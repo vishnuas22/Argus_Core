@@ -284,7 +284,8 @@ class MediaExtractor:
         """
         Detect faces in frame using RetinaFace.
         
-        Falls back to OpenCV Haar cascade if RetinaFace unavailable.
+        Note: OpenCV Haar cascade fallback is disabled due to SIGSEGV issues
+        in forked Celery worker processes on macOS.
         """
         detections = []
         
@@ -295,8 +296,12 @@ class MediaExtractor:
                     from retinaface import RetinaFace
                     self._face_detector = RetinaFace
                 except ImportError:
-                    logger.warning("RetinaFace not available, using OpenCV")
-                    self._face_detector = "opencv"
+                    logger.warning("RetinaFace not available, skipping face detection")
+                    self._face_detector = "skip"
+            
+            if self._face_detector == "skip":
+                # Skip face detection entirely - analysis can proceed without it
+                return detections
             
             if self._face_detector != "opencv":
                 faces = self._face_detector.detect_faces(frame)
@@ -311,28 +316,6 @@ class MediaExtractor:
                             confidence=face_data["score"],
                             landmarks=landmarks
                         ))
-            else:
-                # OpenCV fallback
-                import cv2
-                
-                gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-                face_cascade = cv2.CascadeClassifier(
-                    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-                )
-                
-                faces = face_cascade.detectMultiScale(
-                    gray,
-                    scaleFactor=1.1,
-                    minNeighbors=5,
-                    minSize=(30, 30)
-                )
-                
-                for (x, y, w, h) in faces:
-                    detections.append(FaceDetection(
-                        bbox=(x, y, x + w, y + h),
-                        confidence=0.9,  # OpenCV doesn't provide confidence
-                        landmarks=None
-                    ))
                     
         except Exception as e:
             logger.warning(f"Face detection failed: {e}")

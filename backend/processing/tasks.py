@@ -58,13 +58,15 @@ def process_video_analysis(file_id: str, analysis_id: str):
         
     Returns:
         Dict with analysis results
+        
+    Raises:
+        NotImplementedError: Video analysis must be processed through the main pipeline
     """
-    return {
-        "status": "completed",
-        "file_id": file_id,
-        "analysis_id": analysis_id,
-        "message": "Video analysis task placeholder"
-    }
+    # This task is a stub - video analysis is handled by the orchestrator pipeline
+    raise NotImplementedError(
+        "Video analysis must be processed through the main orchestrator pipeline. "
+        "Use core.orchestrator.run_analysis_pipeline instead."
+    )
 
 
 @celery_app.task(name="tasks.generate_report")
@@ -78,10 +80,12 @@ def generate_report(analysis_id: str, report_type: str = "pdf"):
         
     Returns:
         Dict with report generation status
+        
+    Raises:
+        NotImplementedError: Report generation must be processed through the forensics module
     """
-    return {
-        "status": "completed",
-        "analysis_id": analysis_id,
-        "report_type": report_type,
-        "message": "Report generation task placeholder"
-    }
+    # This task is a stub - report generation is handled by the forensics module
+    raise NotImplementedError(
+        "Report generation must be processed through the forensics module. "
+        "Use forensics.report.ReportGenerator instead."
+    )

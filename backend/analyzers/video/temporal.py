@@ -31,11 +31,19 @@ import numpy as np
 from dataclasses import dataclass, field
 import time
 
-from analyzers.base import SubAnalyzer, normalize_scores, compute_confidence, detect_anomalies
+from analyzers.base import (
+    SubAnalyzer,
+    normalize_scores,
+    compute_confidence,
+    detect_anomalies,
+    infer_fake_class_index,
+    extract_fake_probabilities,
+)
 from schemas.schemas import TemporalResult
 from config import config
 from utils.logging import get_logger
 from utils.errors import InferenceError
+from models.model_init import ensure_models_for_analyzer, is_model_ready
 
 if TYPE_CHECKING:
     from core.engine import InferenceEngine
@@ -180,7 +188,7 @@ class TemporalAnalyzer(SubAnalyzer):
         """
         return [
             "xclip_temporal",      # X-CLIP temporal transformer
-            "retinaface_detector"  # For landmark tracking
+            "retinaface"           # For landmark tracking
         ]
     
     async def analyze_consistency(
@@ -217,7 +225,8 @@ class TemporalAnalyzer(SubAnalyzer):
         
         # 2. Optical Flow Analysis
         flow_features = self.compute_optical_flow_consistency(frame_sequence)
-        flow_score = 1.0 - flow_features.flow_consistency  # Invert for inconsistency
+        # Detect AI artifacts: unnaturally smooth motion or inconsistent flow patterns
+        flow_score = self._compute_flow_anomaly_score(flow_features)
         
         # 3. Landmark Jitter Analysis
         jitter_features = await self._analyze_landmark_jitter(frame_sequence, engine)
@@ -225,7 +234,8 @@ class TemporalAnalyzer(SubAnalyzer):
         
         # 4. Color Consistency Analysis
         color_features = self._analyze_color_consistency(frame_sequence)
-        color_score = 1.0 - color_features.histogram_correlation
+        # Detect AI artifacts: unnaturally uniform colors or sudden color shifts
+        color_score = self._compute_color_anomaly_score(color_features)
         
         # 5. Combine scores for consistency measure
         # Higher score = more consistent (less likely fake)
@@ -284,6 +294,9 @@ class TemporalAnalyzer(SubAnalyzer):
         X-CLIP uses multiframe integration to detect temporal inconsistencies
         that per-frame analysis would miss.
         
+        Note: When xclip_temporal is unavailable (requires GPU), falls back to
+        ai_real_detector (PyTorch model) for per-frame analysis.
+        
         Args:
             frames: Frame sequence
             engine: InferenceEngine
@@ -295,9 +308,7 @@ class TemporalAnalyzer(SubAnalyzer):
             # Prepare frame sequence for X-CLIP
             # X-CLIP expects (B, T, C, H, W) format
             preprocessed = self._preprocess_sequence(frames)
-            
-            # Add batch dimension
-            batch = np.expand_dims(preprocessed, 0)
+            batch = np.expand_dims(preprocessed, 0)  # (1, T, C, H, W)
             
             result = await engine.infer(
                 "xclip_temporal",
@@ -315,8 +326,75 @@ class TemporalAnalyzer(SubAnalyzer):
             return fake_prob
             
         except Exception as e:
-            logger.warning(f"X-CLIP analysis failed: {e}")
-            return 0.5  # Neutral on failure
+            logger.warning(f"X-CLIP analysis failed, using ai_real fallback: {e}")
+            return await self._run_ai_real_fallback(frames)
+
+    async def _run_ai_real_fallback(self, frames: List[np.ndarray]) -> float:
+        """
+        Fallback temporal score using ai_real_detector over sampled frames.
+        
+        Args:
+            frames: Original RGB frames
+            
+        Returns:
+            Mean fake probability across sampled frames
+        """
+        from models.manager import get_model_manager
+        import torch
+        from PIL import Image as PILImage
+        
+        if not frames:
+            return 0.5
+        
+        # Sample to sequence length for bounded compute cost.
+        if len(frames) > self.sequence_length:
+            indices = np.linspace(0, len(frames) - 1, self.sequence_length, dtype=int)
+            sampled_frames = [frames[i] for i in indices]
+        else:
+            sampled_frames = frames
+        
+        pil_images = []
+        for frame in sampled_frames:
+            frame_np = frame
+            if frame_np.dtype in (np.float32, np.float64):
+                frame_np = np.clip(frame_np * 255.0 if frame_np.max() <= 1.0 else frame_np, 0, 255).astype(np.uint8)
+            else:
+                frame_np = frame_np.astype(np.uint8)
+            
+            if frame_np.ndim == 2:
+                frame_np = np.stack([frame_np] * 3, axis=-1)
+            pil_images.append(PILImage.fromarray(frame_np))
+        
+        try:
+            manager = get_model_manager()
+            model_session = await manager.get_model("ai_real_detector")
+            if model_session is None:
+                return 0.5
+            
+            model, processor = model_session
+            device = next(model.parameters()).device
+            
+            inputs = processor(images=pil_images, return_tensors="pt")
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            with torch.no_grad():
+                outputs = model(**inputs)
+                probs_np = torch.nn.functional.softmax(outputs.logits, dim=-1).cpu().numpy()
+            
+            fake_idx = infer_fake_class_index(
+                id2label=getattr(model.config, "id2label", None),
+                class_labels=["human", "ai_generated"],
+                default_index=0
+            )
+            fake_probs = extract_fake_probabilities(
+                probs_np,
+                fake_class_index=fake_idx,
+                apply_confidence_shrinkage=True
+            )
+            return float(np.mean(fake_probs))
+        except Exception as fallback_error:
+            logger.warning(f"Temporal fallback failed: {fallback_error}")
+            return 0.5
     
     def _preprocess_sequence(
         self,
@@ -525,27 +603,105 @@ class TemporalAnalyzer(SubAnalyzer):
         """
         Compute jitter-based inconsistency score.
         
+        Deepfake detection logic:
+        - Real videos have NATURAL MOTION: consistent frame differences,
+          moderate variance, predictable motion patterns.
+        - AI deepfakes have ARTIFACTS: either unnaturally smooth (too-low
+          frame differences) or inconsistently jittery (high variance in
+          frame differences with irregular patterns).
+        
         Args:
             features: LandmarkJitterFeatures
             
         Returns:
-            Score [0, 1] where higher = more inconsistent
+            Score [0, 1] where higher = more likely fake
         """
         score = 0.0
         
-        # Mean jitter contribution
-        if features.mean_jitter > self.jitter_threshold:
-            score += 0.4 * min(1.0, features.mean_jitter / (self.jitter_threshold * 2))
+        # Detect unnaturally smooth video (suspicious for AI)
+        # Real video has meaningful frame differences; AI video may be too smooth
+        if features.mean_jitter < 0.005:
+            # Very low motion = unnaturally smooth, suspicious for AI generation
+            score += 0.4 * (1.0 - features.mean_jitter / 0.005)
         
-        # Max jitter contribution
-        if features.max_jitter > self.jitter_threshold * 1.5:
-            score += 0.3
+        # High variance in jitter (inconsistent motion pattern = suspicious)
+        # Real video has consistent motion; AI video may have irregular artifacts
+        if features.jitter_variance > 0.01:
+            score += 0.3 * min(1.0, features.jitter_variance * 50)
         
-        # Variance contribution (high variance = likely fake)
-        score += 0.3 * min(1.0, features.jitter_variance * 20)
+        # Extremely high jitter (beyond natural motion range = suspicious)
+        if features.mean_jitter > 0.5:
+            score += 0.3 * min(1.0, (features.mean_jitter - 0.5) / 0.5)
         
         return float(np.clip(score, 0, 1))
-    
+
+    def _compute_flow_anomaly_score(
+        self,
+        features: "OpticalFlowFeatures"
+    ) -> float:
+        """
+        Compute optical flow anomaly score for AI detection.
+        
+        Real video: Natural motion with consistent flow patterns.
+        AI video: Either unnaturally smooth (low magnitude variance)
+        or inconsistently jittery (high sudden motion count).
+        
+        Args:
+            features: OpticalFlowFeatures from flow computation
+            
+        Returns:
+            Score [0, 1] where higher = more likely fake
+        """
+        score = 0.0
+        
+        # Unnaturally smooth motion (too-low magnitude variance = suspicious for AI)
+        # Real video has natural motion variation; AI video may be too smooth
+        if features.magnitude_variance < 5.0:
+            score += 0.4 * (1.0 - features.magnitude_variance / 5.0)
+        
+        # Inconsistent motion direction (high direction variance = suspicious)
+        if features.direction_variance > 2.0:
+            score += 0.3 * min(1.0, (features.direction_variance - 2.0) / 3.0)
+        
+        # Sudden motion spikes (abrupt changes = suspicious)
+        if features.sudden_motion_count > 3:
+            score += 0.3 * min(1.0, features.sudden_motion_count / 10.0)
+        
+        return float(np.clip(score, 0, 1))
+
+    def _compute_color_anomaly_score(
+        self,
+        features: "ColorConsistencyFeatures"
+    ) -> float:
+        """
+        Compute color anomaly score for AI detection.
+        
+        Real video: Natural color variation with moderate correlation (>0.85).
+        AI video: Either unnaturally uniform (very high correlation >0.99)
+        or has sudden color shifts (low correlation in burst patterns).
+        
+        Args:
+            features: ColorConsistencyFeatures
+            
+        Returns:
+            Score [0, 1] where higher = more likely fake
+        """
+        score = 0.0
+        
+        # Unnaturally uniform colors (too-high correlation = suspicious for AI)
+        if features.histogram_correlation > 0.99:
+            score += 0.4
+        
+        # Sudden color shift detected (suspicious for AI)
+        if features.color_shift_detected:
+            score += 0.3
+        
+        # Very low correlation (below 0.7 = inconsistent, suspicious)
+        if features.histogram_correlation < 0.7:
+            score += 0.3 * (1.0 - features.histogram_correlation / 0.7)
+        
+        return float(np.clip(score, 0, 1))
+
     def _analyze_color_consistency(
         self,
         frames: List[np.ndarray]

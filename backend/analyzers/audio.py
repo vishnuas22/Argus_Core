@@ -38,6 +38,7 @@ from schemas.schemas import (
 from config import config
 from utils.logging import get_logger
 from utils.errors import ValidationError, InferenceError
+from models.model_init import ensure_models_for_analyzer, is_model_ready
 
 if TYPE_CHECKING:
     from core.engine import InferenceEngine
@@ -132,8 +133,13 @@ class AudioAnalysisDetails:
     Contains all intermediate analysis features for transparency.
     """
     # Neural detector scores
-    purdue_m2_score: float = 0.0
+    aasist_score: float = 0.0  # Primary: AASIST (ASVspoof 2021 winner)
+    purdue_m2_score: float = 0.0  # Legacy: Purdue-M2 (fallback)
     rawnet_score: float = 0.0
+    
+    # Classification (real/VC/TTS)
+    classification: str = "unknown"
+    classification_scores: Dict[str, float] = field(default_factory=dict)
     
     # Feature-based scores
     spectral_features: Optional[SpectralFeatures] = None
@@ -144,18 +150,23 @@ class AudioAnalysisDetails:
     audio_duration_seconds: float = 0.0
     sample_rate: int = DEFAULT_SAMPLE_RATE
     segments_analyzed: int = 0
+    primary_detector: str = "aasist"  # Which detector was used as primary
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for ModalityResult details."""
         return {
+            "aasist_score": round(self.aasist_score, 4),
             "purdue_m2_score": round(self.purdue_m2_score, 4),
             "rawnet_score": round(self.rawnet_score, 4),
+            "classification": self.classification,
+            "classification_scores": {k: round(v, 4) for k, v in self.classification_scores.items()},
             "spectral_features": self.spectral_features.to_dict() if self.spectral_features else None,
             "vocoder_artifacts": self.vocoder_artifacts.to_dict() if self.vocoder_artifacts else None,
             "voice_consistency": self.voice_consistency.to_dict() if self.voice_consistency else None,
             "audio_duration_seconds": round(self.audio_duration_seconds, 2),
             "sample_rate": self.sample_rate,
-            "segments_analyzed": self.segments_analyzed
+            "segments_analyzed": self.segments_analyzed,
+            "primary_detector": self.primary_detector
         }
 
 
@@ -221,9 +232,10 @@ class AudioAnalyzer(BaseAnalyzer):
         
         # Weight configuration for aggregation
         self.weights = {
-            "purdue_m2": 0.50,  # Primary neural detector
-            "vocoder_artifacts": 0.30,  # Vocoder artifact analysis
-            "voice_consistency": 0.20   # Voice consistency
+            "aasist": 0.50,  # Primary: AASIST (ASVspoof 2021 winner)
+            "purdue_m2": 0.30,  # Secondary: Purdue-M2 (legacy fallback)
+            "vocoder_artifacts": 0.10,  # Vocoder artifact analysis
+            "voice_consistency": 0.10   # Voice consistency
         }
         
         # Thresholds
@@ -242,8 +254,9 @@ class AudioAnalyzer(BaseAnalyzer):
             List of model registry keys
         """
         return [
-            "purdue_m2_audio",  # Primary audio deepfake detector
-            "rawnet3_audio"    # Secondary detector (optional)
+            "aasist_antispoof",  # Primary: AASIST (ASVspoof 2021 winner)
+            "purdue_m2",         # Secondary: Legacy spectrogram-based detector
+            "wav2vec2_base"      # Feature extraction for voice consistency
         ]
     
     def validate_input(self, data: PreprocessedData) -> None:
@@ -359,27 +372,58 @@ class AudioAnalyzer(BaseAnalyzer):
         
         logger.debug(f"Analyzing {len(segments)} audio segments ({duration:.2f}s)")
         
-        # 1. Neural detector (Purdue-M2)
+        # Ensure audio models are available
+        model_status = ensure_models_for_analyzer("audio", self.get_required_models())
+        aasist_available = model_status.get("aasist_antispoof", False)
+        purdue_available = model_status.get("purdue_m2", False)
+        
+        if not aasist_available and not purdue_available:
+            logger.warning("No audio models available - using heuristic analysis only")
+        
+        # 1. Primary: AASIST neural detector (ASVspoof 2021 winner)
+        aasist_score = 0.5
+        aasist_class_scores = {}
+        use_aasist = False
+        
+        # Only attempt AASIST if model is ready
+        if aasist_available and is_model_ready("aasist_antispoof"):
+            try:
+                aasist_score, aasist_class_scores = await self._run_aasist(audio_data, engine)
+                details.aasist_score = aasist_score
+                details.classification_scores = aasist_class_scores
+                details.primary_detector = "aasist"
+                use_aasist = True
+                logger.info(f"AASIST detection: spoof_prob={aasist_score:.4f}")
+            except Exception as e:
+                logger.warning(f"AASIST detection failed, falling back to Purdue-M2: {e}")
+                details.primary_detector = "purdue_m2"
+        else:
+            logger.info("AASIST model not available, using Purdue-M2 as primary")
+            details.primary_detector = "purdue_m2"
+        
+        # 2. Secondary: Purdue-M2 neural detector (legacy fallback)
         purdue_m2_score = await self._run_purdue_m2(mel_spectrogram, engine)
         details.purdue_m2_score = purdue_m2_score
         
-        # 2. Vocoder artifact analysis
+        # 3. Vocoder artifact analysis
         vocoder_artifacts = self.detect_vocoder_artifacts(mel_spectrogram, audio_data)
         details.vocoder_artifacts = vocoder_artifacts
         
-        # 3. Voice consistency analysis
+        # 4. Voice consistency analysis
         voice_consistency = self.analyze_voice_consistency(segments, sample_rate)
         details.voice_consistency = voice_consistency
         
-        # 4. Spectral feature analysis
+        # 5. Spectral feature analysis
         spectral_features = self.extract_spectral_features(audio_data, sample_rate)
         details.spectral_features = spectral_features
         
-        # 5. Aggregate scores
+        # 6. Aggregate scores
         synthetic_probability = self._compute_aggregate_score(
+            aasist_score,
             purdue_m2_score,
             vocoder_artifacts,
-            voice_consistency
+            voice_consistency,
+            use_aasist=use_aasist
         )
         
         # 6. Determine if vocoder artifacts detected
@@ -425,6 +469,10 @@ class AudioAnalyzer(BaseAnalyzer):
         try:
             import librosa
             
+            # Disable librosa caching to avoid joblib locator issues
+            import os
+            os.environ['LIBROSA_CACHE_LEVEL'] = '0'
+            
             mel_spec = librosa.feature.melspectrogram(
                 y=audio,
                 sr=sr,
@@ -440,8 +488,8 @@ class AudioAnalyzer(BaseAnalyzer):
             # Transpose to (T, n_mels)
             return mel_spec_db.T.astype(np.float32)
             
-        except ImportError:
-            logger.warning("librosa not available, using simplified mel extraction")
+        except Exception as e:
+            logger.warning(f"librosa not available or failed ({e}), using simplified mel extraction")
             return self._simple_mel_spectrogram(audio, sr)
     
     def _simple_mel_spectrogram(
@@ -502,6 +550,8 @@ class AudioAnalyzer(BaseAnalyzer):
         """
         try:
             import librosa
+            import os
+            os.environ['LIBROSA_CACHE_LEVEL'] = '0'
             
             mfcc = librosa.feature.mfcc(
                 y=audio,
@@ -520,11 +570,37 @@ class AudioAnalyzer(BaseAnalyzer):
             
             return features.T.astype(np.float32)
             
-        except ImportError:
-            logger.warning("librosa not available, using simplified MFCC")
-            # Return placeholder
-            num_frames = len(audio) // 512
-            return np.random.randn(num_frames, self.n_mfcc * 3).astype(np.float32)
+        except Exception as e:
+            logger.warning(f"librosa MFCC extraction failed ({e}), using simplified MFCC fallback")
+            return self._simple_mfcc(audio, sr)
+
+    def _simple_mfcc(self, audio: np.ndarray, sr: int) -> np.ndarray:
+        """
+        Simplified MFCC-like feature extraction without librosa.
+
+        Uses log mel features followed by cosine projection and temporal deltas.
+        """
+        mel = self._simple_mel_spectrogram(audio, sr)
+        if mel.ndim != 2 or mel.shape[0] == 0:
+            return np.zeros((1, self.n_mfcc * 3), dtype=np.float32)
+
+        num_bins = mel.shape[1]
+        coeff_indices = np.arange(self.n_mfcc, dtype=np.float32)
+        bin_indices = np.arange(num_bins, dtype=np.float32)
+        # DCT-II style cosine basis.
+        basis = np.cos(
+            (np.pi / num_bins) * (bin_indices[:, None] + 0.5) * coeff_indices[None, :]
+        ).astype(np.float32)
+
+        mfcc = np.dot(mel, basis)  # (T, n_mfcc)
+        if mfcc.shape[0] > 1:
+            mfcc_delta = np.gradient(mfcc, axis=0)
+            mfcc_delta2 = np.gradient(mfcc_delta, axis=0)
+        else:
+            mfcc_delta = np.zeros_like(mfcc)
+            mfcc_delta2 = np.zeros_like(mfcc)
+
+        return np.concatenate([mfcc, mfcc_delta, mfcc_delta2], axis=1).astype(np.float32)
     
     def extract_spectral_features(
         self,
@@ -543,6 +619,8 @@ class AudioAnalyzer(BaseAnalyzer):
         """
         try:
             import librosa
+            import os
+            os.environ['LIBROSA_CACHE_LEVEL'] = '0'
             
             # Spectral centroid
             centroid = librosa.feature.spectral_centroid(y=audio, sr=sr)[0]
@@ -567,8 +645,8 @@ class AudioAnalyzer(BaseAnalyzer):
                 zero_crossing_rate=float(np.mean(zcr))
             )
             
-        except ImportError:
-            logger.warning("librosa not available, using simplified spectral features")
+        except Exception as e:
+            logger.warning(f"librosa spectral features failed ({e}), using defaults")
             return SpectralFeatures(
                 spectral_centroid=0.5,
                 spectral_bandwidth=0.5,
@@ -862,18 +940,36 @@ class AudioAnalyzer(BaseAnalyzer):
             Synthetic probability [0, 1]
         """
         try:
-            # Prepare input
-            # Purdue-M2 expects (B, 1, T, F) or (B, T, F)
-            if spectrogram.ndim == 2:
-                batch = np.expand_dims(spectrogram, 0)  # (1, T, F)
-            else:
-                batch = spectrogram
+            # Prepare input for purdue_m2.onnx (NHWC: [1, 224, 224, 3]).
+            # Convert mel spectrogram into a normalized image-like tensor.
+            spec = np.asarray(spectrogram, dtype=np.float32)
+            if spec.ndim == 3 and spec.shape[0] == 1:
+                spec = spec[0]
+            spec = np.squeeze(spec)
+            if spec.ndim != 2:
+                raise ValueError(f"Unexpected spectrogram shape for Purdue-M2: {spec.shape}")
             
-            # Ensure float32
-            batch = batch.astype(np.float32)
+            spec_min = float(np.min(spec))
+            spec_max = float(np.max(spec))
+            if spec_max > spec_min:
+                spec_norm = (spec - spec_min) / (spec_max - spec_min)
+            else:
+                spec_norm = np.zeros_like(spec, dtype=np.float32)
+            
+            try:
+                import cv2
+                spec_resized = cv2.resize(spec_norm, (224, 224), interpolation=cv2.INTER_LINEAR)
+            except Exception:
+                from PIL import Image as PILImage
+                spec_img = PILImage.fromarray((spec_norm * 255.0).astype(np.uint8))
+                spec_img = spec_img.resize((224, 224), PILImage.Resampling.BILINEAR)
+                spec_resized = np.asarray(spec_img, dtype=np.float32) / 255.0
+            
+            spec_rgb = np.stack([spec_resized, spec_resized, spec_resized], axis=-1).astype(np.float32)
+            batch = np.expand_dims(spec_rgb, axis=0)  # (1, 224, 224, 3)
             
             result = await engine.infer(
-                "purdue_m2_audio",
+                "purdue_m2",
                 batch,
                 return_probabilities=True
             )
@@ -888,23 +984,109 @@ class AudioAnalyzer(BaseAnalyzer):
             
             return fake_prob
             
-        except Exception as e:
-            logger.warning(f"Purdue-M2 inference failed: {e}")
+        except ImportError as e:
+            logger.warning(f"Purdue-M2 dependencies missing, using neutral score: {e}")
             return 0.5
+        except RuntimeError as e:
+            logger.warning(f"Purdue-M2 runtime error, using neutral score: {e}")
+            return 0.5
+        except ValueError as e:
+            logger.warning(f"Purdue-M2 input validation error, using neutral score: {e}")
+            return 0.5
+        except Exception as e:
+            logger.warning(f"Purdue-M2 inference failed, using neutral score: {type(e).__name__}: {e}")
+            return 0.5
+    
+    async def _run_aasist(
+        self,
+        audio: np.ndarray,
+        engine: "InferenceEngine"
+    ) -> Tuple[float, Dict[str, float]]:
+        """
+        Run AASIST (Anti-spoofing with Attention and Self-supervised Learning) detector.
+        
+        AASIST is the ASVspoof 2021 winner for synthetic voice detection.
+        It analyzes raw audio waveforms for spoofing artifacts.
+        
+        Args:
+            audio: Raw waveform (1D array) at 16kHz
+            engine: InferenceEngine
+            
+        Returns:
+            Tuple of (spoof_probability, class_scores)
+        """
+        try:
+            # AASIST expects fixed-length audio (~4 seconds at 16kHz = 64600 samples)
+            target_length = 64600
+            
+            # Pad or truncate to target length
+            if len(audio) < target_length:
+                # Pad with zeros
+                padded = np.zeros(target_length, dtype=np.float32)
+                padded[:len(audio)] = audio
+                audio = padded
+            elif len(audio) > target_length:
+                # Truncate
+                audio = audio[:target_length]
+            
+            # Ensure float32
+            audio = audio.astype(np.float32)
+            
+            # Add batch dimension
+            batch = np.expand_dims(audio, 0)  # (1, 64600)
+            
+            result = await engine.infer(
+                "aasist_antispoof",
+                batch,
+                return_probabilities=True
+            )
+            
+            # Extract spoof probability
+            if result.class_probabilities is not None:
+                probs = result.class_probabilities[0]
+                # AASIST: class 0 = bonafide, class 1 = spoof
+                spoof_prob = float(probs[1]) if len(probs) >= 2 else float(probs[0])
+                class_scores = {
+                    "bonafide": float(probs[0]) if len(probs) >= 2 else 1.0 - spoof_prob,
+                    "spoof": spoof_prob
+                }
+            else:
+                spoof_prob = float(result.predictions[0])
+                class_scores = {"bonafide": 1.0 - spoof_prob, "spoof": spoof_prob}
+            
+            logger.debug(f"AASIST result: spoof_prob={spoof_prob:.4f}")
+            return spoof_prob, class_scores
+            
+        except ImportError as e:
+            logger.error(f"AASIST model dependencies missing: {e}")
+            raise InferenceError("aasist", f"Missing dependencies: {e}")
+        except RuntimeError as e:
+            logger.error(f"AASIST ONNX runtime error: {e}")
+            raise InferenceError("aasist", f"Runtime error: {e}")
+        except ValueError as e:
+            logger.error(f"AASIST input validation error: {e}")
+            raise InferenceError("aasist", f"Invalid input: {e}")
+        except Exception as e:
+            logger.error(f"AASIST inference failed: {type(e).__name__}: {e}")
+            raise InferenceError("aasist", f"Unexpected error: {type(e).__name__}: {e}")
     
     def _compute_aggregate_score(
         self,
+        aasist_score: float,
         purdue_m2_score: float,
         vocoder_artifacts: VocoderArtifactFeatures,
-        voice_consistency: VoiceConsistencyFeatures
+        voice_consistency: VoiceConsistencyFeatures,
+        use_aasist: bool = True
     ) -> float:
         """
         Compute aggregate synthetic probability.
         
         Args:
-            purdue_m2_score: Neural detector score
+            aasist_score: AASIST detector score (primary)
+            purdue_m2_score: Purdue-M2 detector score (secondary)
             vocoder_artifacts: Vocoder artifact analysis
             voice_consistency: Voice consistency analysis
+            use_aasist: Whether AASIST was successfully used
             
         Returns:
             Aggregate synthetic probability [0, 1]
@@ -915,12 +1097,21 @@ class AudioAnalyzer(BaseAnalyzer):
             voice_consistency.formant_consistency * 0.5
         )
         
-        # Weighted combination
-        aggregate = (
-            self.weights["purdue_m2"] * purdue_m2_score +
-            self.weights["vocoder_artifacts"] * vocoder_artifacts.artifact_score +
-            self.weights["voice_consistency"] * inconsistency_score
-        )
+        if use_aasist:
+            # Use AASIST as primary detector
+            aggregate = (
+                self.weights["aasist"] * aasist_score +
+                self.weights["purdue_m2"] * purdue_m2_score +
+                self.weights["vocoder_artifacts"] * vocoder_artifacts.artifact_score +
+                self.weights["voice_consistency"] * inconsistency_score
+            )
+        else:
+            # Fallback to Purdue-M2 as primary
+            aggregate = (
+                (self.weights["aasist"] + self.weights["purdue_m2"]) * purdue_m2_score +
+                self.weights["vocoder_artifacts"] * vocoder_artifacts.artifact_score +
+                self.weights["voice_consistency"] * inconsistency_score
+            )
         
         return float(np.clip(aggregate, 0, 1))
     
@@ -940,14 +1131,21 @@ class AudioAnalyzer(BaseAnalyzer):
         # Segments factor
         segments_factor = min(1.0, details.segments_analyzed / 5.0)
         
-        # Score extremity factor
-        score = details.purdue_m2_score
+        # Score extremity factor - use primary detector score
+        if details.primary_detector == "aasist":
+            score = details.aasist_score
+        else:
+            score = details.purdue_m2_score
         extremity_factor = abs(score - 0.5) * 2
+        
+        # Primary detector bonus (AASIST is more reliable)
+        detector_bonus = 0.1 if details.primary_detector == "aasist" else 0.0
         
         confidence = (
             0.4 * duration_factor +
             0.3 * segments_factor +
-            0.3 * extremity_factor
+            0.2 * extremity_factor +
+            detector_bonus
         )
         
         return float(np.clip(confidence, 0.3, 0.95))
@@ -962,12 +1160,24 @@ class AudioAnalyzer(BaseAnalyzer):
         Returns:
             List of audio segments
         """
-        segments = []
-        
-        for start in range(0, len(audio) - self.segment_samples, self.hop_samples):
+        segments: List[np.ndarray] = []
+
+        if len(audio) == 0:
+            return segments
+
+        if len(audio) <= self.segment_samples:
+            padded = np.pad(audio, (0, self.segment_samples - len(audio)))
+            return [padded.astype(np.float32)]
+
+        max_start = len(audio) - self.segment_samples
+        for start in range(0, max_start + 1, self.hop_samples):
             segment = audio[start:start + self.segment_samples]
-            segments.append(segment)
-        
+            segments.append(segment.astype(np.float32))
+
+        if not segments:
+            # Safety fallback for edge cases.
+            segments.append(audio[:self.segment_samples].astype(np.float32))
+
         return segments
     
     def _resample_audio(
@@ -1025,21 +1235,52 @@ class AudioAnalyzer(BaseAnalyzer):
         Returns:
             Tuple of (waveform, sample_rate) or (None, 0)
         """
+        import io as io_module
+        from storage.storage import get_storage_client
+        from config import config
+        
         if not audio_key:
             return None, 0
         
-        # TODO: Integrate with StorageClient
-        # For now, return placeholder
-        # In production:
-        # audio_bytes = await storage.download_file("argus-preprocessed", audio_key)
-        # waveform, sr = load_audio_file(audio_bytes)
-        
-        # Placeholder: 5 seconds of audio at 16kHz
-        duration = 5.0
-        sr = self.target_sample_rate
-        waveform = np.random.randn(int(duration * sr)).astype(np.float32) * 0.1
-        
-        return waveform, sr
+        try:
+            storage = get_storage_client()
+            
+            audio_bytes = await storage.download_file(
+                config.minio_bucket_preprocessed,
+                audio_key
+            )
+
+            waveform: Optional[np.ndarray] = None
+
+            # Preferred format: NumPy file (.npy)
+            if audio_key.endswith(".npy"):
+                try:
+                    loaded = np.load(io_module.BytesIO(audio_bytes), allow_pickle=True)
+                    if isinstance(loaded, np.ndarray) and loaded.dtype == object:
+                        if hasattr(loaded, "item") and isinstance(loaded.item(), np.ndarray):
+                            loaded = loaded.item()
+                    waveform = np.asarray(loaded, dtype=np.float32).reshape(-1)
+                except Exception as npy_error:
+                    logger.warning(
+                        f"Failed to parse {audio_key} as .npy ({npy_error}), "
+                        "falling back to raw float32 decode"
+                    )
+
+            # Backward-compatible fallback: raw float32 bytes
+            if waveform is None:
+                waveform = np.frombuffer(audio_bytes, dtype=np.float32).copy()
+            
+            # Validate waveform
+            if len(waveform) == 0:
+                logger.warning(f"Empty audio waveform loaded from {audio_key}")
+                return None, 0
+                
+            logger.debug(f"Loaded audio waveform: {len(waveform)} samples from {audio_key}")
+            return waveform, self.target_sample_rate
+                
+        except Exception as e:
+            logger.warning(f"Failed to load audio {audio_key}: {e}")
+            return None, 0
     
     def _create_default_result(self) -> AudioResult:
         """Create default result for insufficient data."""

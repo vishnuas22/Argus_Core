@@ -21,6 +21,10 @@ from typing import AsyncGenerator, Optional, TYPE_CHECKING
 from functools import lru_cache
 import asyncio
 from contextlib import asynccontextmanager
+import subprocess
+import signal
+import os
+import shutil
 
 from fastapi import Depends, Request, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -44,6 +48,359 @@ logger = get_logger(__name__)
 
 # Security scheme for JWT authentication
 security = HTTPBearer(auto_error=False)
+
+# ============== SERVICE MANAGER ==============
+
+class ServiceManager:
+    """
+    Manages automatic startup of infrastructure services.
+    
+    Handles Redis, MinIO, MongoDB, and Celery worker processes.
+    Services are started automatically when the application initializes.
+    """
+    
+    _instance: Optional["ServiceManager"] = None
+    _celery_process: Optional[subprocess.Popen] = None
+    _services_started: bool = False
+    
+    def __new__(cls) -> "ServiceManager":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def _is_docker_available(self) -> bool:
+        """Check if Docker is available on the system."""
+        return shutil.which("docker") is not None
+    
+    def _is_service_running(self, container_name: str) -> bool:
+        """Check if a Docker container is running."""
+        try:
+            result = subprocess.run(
+                ["docker", "ps", "--filter", f"name={container_name}", "--filter", "status=running", "-q"],
+                capture_output=True, text=True, timeout=10
+            )
+            return bool(result.stdout.strip())
+        except Exception:
+            return False
+    
+    def _start_docker_service(self, container_name: str, image: str, ports: list, env_vars: list = None) -> bool:
+        """
+        Start a Docker service container.
+        
+        Args:
+            container_name: Name for the container
+            image: Docker image to use
+            ports: List of port mappings (e.g., ["6379:6379"])
+            env_vars: List of environment variables (e.g., ["KEY=value"])
+            
+        Returns:
+            True if service started successfully
+        """
+        try:
+            # Check if container exists but is stopped
+            result = subprocess.run(
+                ["docker", "ps", "-a", "--filter", f"name={container_name}", "-q"],
+                capture_output=True, text=True, timeout=10
+            )
+            
+            if result.stdout.strip():
+                # Container exists, start it
+                subprocess.run(["docker", "start", container_name], capture_output=True, timeout=30)
+                logger.info(f"Started existing container: {container_name}")
+                return True
+            
+            # Create new container
+            cmd = ["docker", "run", "-d", "--name", container_name]
+            
+            for port in ports:
+                cmd.extend(["-p", port])
+            
+            if env_vars:
+                for env in env_vars:
+                    cmd.extend(["-e", env])
+            
+            cmd.append(image)
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            
+            if result.returncode == 0:
+                logger.info(f"Created and started container: {container_name}")
+                return True
+            else:
+                logger.error(f"Failed to start container {container_name}: {result.stderr}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout starting container: {container_name}")
+            return False
+        except Exception as e:
+            logger.error(f"Error starting container {container_name}: {e}")
+            return False
+    
+    def start_redis(self) -> bool:
+        """
+        Start Redis service.
+        
+        Returns:
+            True if Redis is available
+        """
+        container_name = "argus-redis"
+        
+        if self._is_service_running(container_name):
+            logger.info("Redis container already running")
+            return True
+        
+        if self._is_docker_available():
+            success = self._start_docker_service(
+                container_name=container_name,
+                image="redis:7-alpine",
+                ports=["6379:6379"]
+            )
+            if success:
+                # Wait for Redis to be ready
+                import time
+                for _ in range(10):
+                    try:
+                        result = subprocess.run(
+                            ["docker", "exec", container_name, "redis-cli", "ping"],
+                            capture_output=True, text=True, timeout=5
+                        )
+                        if "PONG" in result.stdout:
+                            logger.info("Redis service ready")
+                            return True
+                    except Exception:
+                        pass
+                    time.sleep(1)
+            return success
+        
+        logger.warning("Docker not available, assuming Redis is running externally")
+        return True
+    
+    def start_minio(self) -> bool:
+        """
+        Start MinIO service.
+        
+        Returns:
+            True if MinIO is available
+        """
+        container_name = "argus-minio"
+        
+        if self._is_service_running(container_name):
+            logger.info("MinIO container already running")
+            return True
+        
+        if self._is_docker_available():
+            success = self._start_docker_service(
+                container_name=container_name,
+                image="minio/minio",
+                ports=["9000:9000", "9001:9001"],
+                env_vars=[
+                    "MINIO_ROOT_USER=minioadmin",
+                    "MINIO_ROOT_PASSWORD=minioadmin"
+                ]
+            )
+            if success:
+                # Override the default command for MinIO
+                subprocess.run(
+                    ["docker", "exec", container_name, "mkdir", "-p", "/data"],
+                    capture_output=True, timeout=10
+                )
+                logger.info("MinIO service ready")
+                return True
+            return success
+        
+        logger.warning("Docker not available, assuming MinIO is running externally")
+        return True
+    
+    def start_mongodb(self) -> bool:
+        """
+        Start MongoDB service.
+        
+        Returns:
+            True if MongoDB is available
+        """
+        container_name = "argus-mongo"
+        
+        if self._is_service_running(container_name):
+            logger.info("MongoDB container already running")
+            return True
+        
+        if self._is_docker_available():
+            success = self._start_docker_service(
+                container_name=container_name,
+                image="mongo:7",
+                ports=["27017:27017"]
+            )
+            if success:
+                logger.info("MongoDB service ready")
+                return True
+            return success
+        
+        logger.warning("Docker not available, assuming MongoDB is running externally")
+        return True
+    
+    def start_celery(self) -> bool:
+        """
+        Start Celery worker process.
+        
+        Returns:
+            True if Celery worker started successfully
+        """
+        if self._celery_process is not None:
+            # Check if process is still running
+            if self._celery_process.poll() is None:
+                logger.info("Celery worker already running")
+                return True
+            else:
+                self._celery_process = None
+        
+        try:
+            # Get the backend directory path
+            backend_dir = os.path.dirname(os.path.abspath(__file__))
+            parent_dir = os.path.dirname(backend_dir)
+            
+            # Start Celery worker - use core.orchestrator which has the analysis tasks
+            self._celery_process = subprocess.Popen(
+                [
+                    "celery", "-A", "core.orchestrator.celery_app", "worker",
+                    "--loglevel=info",
+                    "--concurrency=2",
+                    "--pool=prefork"
+                ],
+                cwd=parent_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True
+            )
+            
+            # Give it a moment to start
+            import time
+            time.sleep(2)
+            
+            if self._celery_process.poll() is None:
+                logger.info(f"Celery worker started (PID: {self._celery_process.pid})")
+                return True
+            else:
+                logger.error("Celery worker failed to start")
+                self._celery_process = None
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to start Celery worker: {e}")
+            self._celery_process = None
+            return False
+    
+    def create_minio_buckets(self) -> bool:
+        """
+        Create required MinIO buckets.
+        
+        Returns:
+            True if buckets were created successfully
+        """
+        container_name = "argus-minio"
+        
+        if not self._is_service_running(container_name):
+            return False
+        
+        buckets = ["argus-uploads", "argus-preprocessed", "argus-results"]
+        
+        try:
+            # Configure mc alias
+            subprocess.run(
+                ["docker", "exec", container_name, "mc", "alias", "set", "local",
+                 "http://localhost:9000", "minioadmin", "minioadmin"],
+                capture_output=True, timeout=10
+            )
+            
+            for bucket in buckets:
+                subprocess.run(
+                    ["docker", "exec", container_name, "mc", "mb", f"local/{bucket}"],
+                    capture_output=True, timeout=10
+                )
+            
+            logger.info(f"MinIO buckets created: {buckets}")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Failed to create MinIO buckets: {e}")
+            return False
+    
+    async def start_all_services(self) -> dict:
+        """
+        Start all infrastructure services.
+        
+        Returns:
+            Dict with status of each service
+        """
+        if self._services_started:
+            logger.info("Services already started")
+            return {"status": "already_started"}
+        
+        logger.info("="*60)
+        logger.info("AUTO-STARTING INFRASTRUCTURE SERVICES")
+        logger.info("="*60)
+        
+        results = {}
+        
+        # Start services in order (infrastructure first)
+        logger.info("Starting Redis...")
+        results["redis"] = self.start_redis()
+        
+        logger.info("Starting MinIO...")
+        results["minio"] = self.start_minio()
+        
+        logger.info("Starting MongoDB...")
+        results["mongodb"] = self.start_mongodb()
+        
+        # Wait for services to be ready
+        await asyncio.sleep(2)
+        
+        # Create MinIO buckets
+        if results["minio"]:
+            self.create_minio_buckets()
+        
+        # Start Celery (depends on Redis)
+        logger.info("Starting Celery worker...")
+        results["celery"] = self.start_celery()
+        
+        self._services_started = True
+        
+        logger.info("="*60)
+        logger.info("SERVICE STARTUP RESULTS:")
+        for service, status in results.items():
+            status_icon = "✓" if status else "✗"
+            logger.info(f"  {status_icon} {service}: {'running' if status else 'failed'}")
+        logger.info("="*60)
+        
+        return results
+    
+    def stop_celery(self) -> None:
+        """Stop Celery worker process."""
+        if self._celery_process is not None:
+            try:
+                self._celery_process.terminate()
+                self._celery_process.wait(timeout=5)
+                logger.info("Celery worker stopped")
+            except Exception as e:
+                logger.warning(f"Error stopping Celery worker: {e}")
+                try:
+                    self._celery_process.kill()
+                except Exception:
+                    pass
+            finally:
+                self._celery_process = None
+
+
+# Global service manager instance
+_service_manager: Optional[ServiceManager] = None
+
+
+def get_service_manager() -> ServiceManager:
+    """Get singleton service manager instance."""
+    global _service_manager
+    if _service_manager is None:
+        _service_manager = ServiceManager()
+    return _service_manager
 
 
 # ============== CONFIGURATION ==============
@@ -568,21 +925,34 @@ async def wait_for_minio(max_retries: int = 10, retry_delay: float = 2.0) -> boo
         retry_delay: Delay between retries in seconds
         
     Returns:
-        True if MinIO is available, False otherwise
+        True if MinIO is available (or local fallback is ready), False otherwise
     """
     for attempt in range(1, max_retries + 1):
         try:
             storage = get_storage_client()
-            await asyncio.wait_for(storage.ensure_default_buckets(), timeout=5.0)
-            logger.info(f"✓ MinIO is available and buckets initialized")
-            return True
+            await asyncio.wait_for(storage.ensure_default_buckets(), timeout=10.0)
+            # Check if storage is ready (either MinIO or local fallback)
+            ready = await storage.wait_for_ready(timeout=5.0)
+            if ready:
+                mode = "local fallback" if storage._use_local_fallback else "MinIO"
+                logger.info(f"✓ Storage ready ({mode}) and buckets initialized")
+                return True
         except Exception as e:
             if attempt < max_retries:
                 logger.warning(f"MinIO not ready (attempt {attempt}/{max_retries}), retrying in {retry_delay}s...")
                 await asyncio.sleep(retry_delay)
             else:
                 logger.error(f"✗ MinIO unavailable after {max_retries} attempts: {e}")
-                return False
+                # Try local fallback as last resort
+                storage = get_storage_client()
+                storage._use_local_fallback = True
+                try:
+                    await storage.ensure_default_buckets()
+                    logger.info("✓ Using local storage fallback")
+                    return True
+                except Exception as fallback_error:
+                    logger.error(f"✗ Local fallback also failed: {fallback_error}")
+                    return False
     return False
 
 
@@ -593,10 +963,15 @@ async def startup_dependencies() -> None:
     Called during FastAPI startup event.
     Preloads critical models for immediate availability.
     Ensures Redis and MinIO services are ready before proceeding.
+    Auto-starts infrastructure services if not running.
     """
     logger.info("="*60)
     logger.info("ARGUS CORE - INITIALIZING SERVICES")
     logger.info("="*60)
+    
+    # Auto-start infrastructure services
+    service_manager = get_service_manager()
+    await service_manager.start_all_services()
     
     # Wait for Redis to be available
     logger.info("Checking Redis availability...")
@@ -636,11 +1011,10 @@ async def startup_dependencies() -> None:
         logger.info("="*60)
         
         critical_models = [
-            "efficientnet_b3_spatial",
+            "ai_real_detector",   # Unified AI/Real image detection model (capcheck/ai-human-generated-image-detection)
             "retinaface",
             "purdue_m2",
             "clip_vit_b16",
-            "siglip_deepfake",
             "xclip_temporal"
         ]
         
@@ -667,8 +1041,9 @@ async def startup_dependencies() -> None:
         logger.info(f"  • Total time: {warmup_time:.2f}s")
         
         if failed_models:
-            logger.warning(f"  • Failed models: {', '.join(failed_models)}")
-            logger.warning(f"  • These will use placeholder inference for development")
+            logger.error(f"  • Failed models: {', '.join(failed_models)}")
+            logger.error(f"  • Critical models failed to load - application may not function correctly")
+            logger.error(f"  • Ensure model weights are downloaded. Check AUTO_START_CONFIGURATION.md")
         
         # Log VRAM usage
         loaded = manager.get_loaded_models()
@@ -678,7 +1053,7 @@ async def startup_dependencies() -> None:
         logger.info(f"VRAM STATUS:")
         logger.info(f"  • Used: {vram_used}MB")
         logger.info(f"  • Available: {vram_available}MB")
-        logger.info(f"  • Loaded models: {', '.join(loaded) if loaded else 'None (using placeholders)'}")
+        logger.info(f"  • Loaded models: {', '.join(loaded) if loaded else 'None'}")
         logger.info("="*60)
         
     except Exception as e:
@@ -695,6 +1070,11 @@ async def shutdown_dependencies() -> None:
     Called during FastAPI shutdown event.
     """
     logger.info("Shutting down dependencies...")
+    
+    # Stop Celery worker
+    service_manager = get_service_manager()
+    service_manager.stop_celery()
+    logger.info("Celery worker stopped")
     
     # Close database connection
     await close_db_client()
