@@ -30,7 +30,7 @@ from analyzers.base import (
 )
 
 from analyzers.image import ImageAnalyzer, get_image_analyzer
-from analyzers.video import VideoAnalyzer, get_video_analyzer
+from analyzers.video_analyzer import VideoAnalyzer, get_video_analyzer
 from analyzers.audio import AudioAnalyzer, get_audio_analyzer
 from analyzers.text import TextAnalyzer, get_text_analyzer
 from analyzers.metadata import MetadataAnalyzer, get_metadata_analyzer
