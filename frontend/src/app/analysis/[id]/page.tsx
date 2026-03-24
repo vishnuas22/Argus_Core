@@ -61,6 +61,8 @@ import { useProgressStore, selectProgress, STAGE_LABELS } from '@/store/progress
 // Components
 import { ProgressIndicator, ProgressIndicatorSkeleton } from '@/components/analysis/ProgressIndicator';
 import { AnalysisTimeline, AnalysisTimelineSkeleton } from '@/components/analysis/AnalysisTimeline';
+import { XAIExplanationPanel } from '@/components/xai';
+import { ErrorBoundary } from '@/components/errors/ErrorBoundary';
 
 // Types
 import type { AnalysisStatus, Verdict, TrustScore } from '@/types/analysis';
@@ -472,6 +474,10 @@ export default function AnalysisPage({ params }: AnalysisPageProps) {
   // ============== COMPLETED STATE - RESULTS ==============
 
   return (
+    <ErrorBoundary
+      errorTitle="Results Display Error"
+      errorMessage="Unable to display the analysis results. The analysis completed successfully, but an error occurred while rendering the results."
+    >
     <div 
       className="min-h-screen bg-gradient-to-b from-background to-muted/20"
       data-testid="analysis-page"
@@ -694,6 +700,18 @@ export default function AnalysisPage({ params }: AnalysisPageProps) {
               </CardContent>
             </Card>
           )}
+
+          {/* XAI Explanation Panel - Court-Admissible Forensic Evidence */}
+          {isComplete && (
+            <XAIExplanationPanel
+              analysisId={analysisId}
+              showModalityTabs
+              showEvidenceGallery
+              showReferences
+              showReproducibility
+              defaultExpanded
+            />
+          )}
         </div>
       </main>
 
@@ -704,6 +722,7 @@ export default function AnalysisPage({ params }: AnalysisPageProps) {
         </div>
       </footer>
     </div>
+    </ErrorBoundary>
   );
 }
 
