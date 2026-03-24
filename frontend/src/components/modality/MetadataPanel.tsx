@@ -483,7 +483,7 @@ function C2PASection({
             <p className="text-xs text-muted-foreground">
               C2PA (Coalition for Content Provenance and Authenticity) is an open standard
               for certifying the source and history of media content. It uses cryptographic
-              signatures to verify that content hasn't been modified since creation.
+              signatures to verify that content hasn&apos;t been modified since creation.
             </p>
           </div>
         )}
