@@ -206,9 +206,10 @@ class InputSanitizer:
         if len(content) >= 12:
             if content[4:8] == b'ftyp':
                 ftyp = content[8:12]
-                if ftyp in [b'mp41', b'mp42', b'isom', b'avc1', b'M4V ']:
+                # Common MP4 brands
+                if ftyp in [b'mp41', b'mp42', b'isom', b'avc1', b'M4V ', b'iso2', b'iso3', b'iso4', b'iso5', b'iso6', b'mp71', b'mp72', b'MSNV', b'f4v ']:
                     return FileType.VIDEO_MP4
-                if ftyp in [b'qt  ', b'MSNV']:
+                if ftyp in [b'qt  ']:
                     return FileType.VIDEO_MOV
         
         # AVI
@@ -235,11 +236,13 @@ class InputSanitizer:
         try:
             content[:1024].decode('utf-8')
             # Check for high proportion of printable chars
-            printable = sum(1 for b in content[:1024] if 32 <= b <= 126 or b in [9, 10, 13])
-            if printable / min(1024, len(content)) > 0.8:
-                return FileType.TEXT_PLAIN
+            content_sample = content[:1024]
+            if len(content_sample) > 0:
+                printable = sum(1 for b in content_sample if 32 <= b <= 126 or b in [9, 10, 13])
+                if printable / len(content_sample) > 0.8:
+                    return FileType.TEXT_PLAIN
         except UnicodeDecodeError:
-            pass
+            logger.debug("Content sample is not valid UTF-8 text")
         
         return None
     

@@ -40,10 +40,15 @@ class Settings(BaseSettings):
     
     # ============== ML CONFIGURATION ==============
     model_cache_dir: str = "/models"
-    use_gpu: bool = True
+    use_gpu: bool = True  # Will be overridden by hardware detection
     gpu_memory_limit_mb: int = 3500  # RTX 3050 has 4GB, leave headroom
     enable_tensorrt: bool = True
     fallback_to_cpu: bool = True
+    
+    # ============== MODEL DOWNLOAD ==============
+    auto_download_models: bool = True  # Automatically download missing models
+    download_on_startup: bool = True  # Download essential models on startup
+    huggingface_token: Optional[str] = None  # Optional HF token for private models
     
     # ============== PROCESSING ==============
     max_video_duration_seconds: int = 300  # 5 minutes max
@@ -57,8 +62,6 @@ class Settings(BaseSettings):
     score_weight_video_temporal: float = 0.25
     score_weight_audio: float = 0.20
     score_weight_metadata: float = 0.15
-    score_weight_text: float = 0.10
-    
     verdict_threshold_authentic: int = 80
     verdict_threshold_likely_authentic: int = 60
     verdict_threshold_uncertain: int = 40
@@ -71,7 +74,7 @@ class Settings(BaseSettings):
     api_rate_limit_per_minute: int = 100
     
     # ============== CORS ==============
-    cors_origins: str = "*"
+    cors_origins: str = "http://localhost:3000"
     
     # ============== LOGGING ==============
     log_level: str = "INFO"
@@ -81,7 +84,7 @@ class Settings(BaseSettings):
     api_version: str = "v1"
     api_title: str = "Argus Core API"
     api_description: str = "Multi-Modal Deepfake Detection & Forensic Analysis Platform"
-    
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

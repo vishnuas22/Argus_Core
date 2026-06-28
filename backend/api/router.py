@@ -45,7 +45,7 @@ from processing.sanitize import InputSanitizer, SanitizedFile
 from core.engine import InferenceEngine
 from api.deps import (
     get_db, get_storage, get_sanitizer_standard, get_sanitizer_aggressive,
-    get_orchestrator, get_correlation_id, get_current_user_optional,
+    get_orchestrator, get_correlation_id, get_current_user, get_current_user_optional,
     get_analysis_deps, AnalysisDependencies, check_rate_limit, get_engine
 )
 from utils.logging import get_logger
@@ -94,7 +94,8 @@ async def analyze_media(
     defense_level: str = Form(default="standard", description="Adversarial defense level: none, standard, aggressive"),
     modalities: Optional[str] = Form(default=None, description="Comma-separated modalities to analyze (auto-detect if empty)"),
     deps: AnalysisDependencies = Depends(get_analysis_deps),
-    user: Optional[dict] = Depends(get_current_user_optional)
+    user: Optional[dict] = Depends(get_current_user_optional),
+    _rate_limited: None = Depends(check_rate_limit)
 ):
     """
     Upload and analyze media for deepfake detection.
@@ -324,9 +325,13 @@ async def get_analysis_detail(
         completed_at=analysis.completed_at,
         video_result=analysis.video_result,
         audio_result=analysis.audio_result,
-        text_result=analysis.text_result,
+        image_result=getattr(analysis, 'image_result', None),
         metadata_result=analysis.metadata_result,
-        processing_time_seconds=analysis.processing_time_seconds
+        processing_time_seconds=analysis.processing_time_seconds,
+        # XAI Enhancement Fields
+        evidence_package=getattr(analysis, 'evidence_package', None),
+        feature_importance=getattr(analysis, 'feature_importance', []),
+        scientific_references=getattr(analysis, 'scientific_references', [])
     )
 
 
@@ -344,7 +349,7 @@ async def delete_analysis(
     analysis_id: str = Path(..., description="Analysis ID"),
     db: DatabaseClient = Depends(get_db),
     storage: StorageClient = Depends(get_storage),
-    user: Optional[dict] = Depends(get_current_user_optional)
+    user: dict = Depends(get_current_user)
 ):
     """Delete analysis and associated files."""
     # Check if analysis exists
@@ -427,114 +432,6 @@ async def list_analyses(
     return analyses
 
 
-# ============== TEXT ANALYSIS ENDPOINT ==============
-
-@router.post(
-    "/analyze/text",
-    response_model=AnalysisResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="Analyze text for AI generation",
-    description="""
-    Analyze text content for AI-generated text detection.
-    
-    Uses RADAR model with perplexity/burstiness analysis.
-    
-    Minimum text length: 50 characters
-    Maximum text length: 100,000 characters
-    """,
-    responses={
-        202: {"description": "Analysis started"},
-        400: {"model": ErrorResponse, "description": "Invalid text"},
-        429: {"model": ErrorResponse, "description": "Rate limit exceeded"}
-    }
-)
-async def analyze_text(
-    text: str = Form(..., min_length=50, max_length=100000, description="Text content to analyze"),
-    generate_report: bool = Form(default=False, description="Generate PDF report"),
-    deps: AnalysisDependencies = Depends(get_analysis_deps),
-    user: Optional[dict] = Depends(get_current_user_optional)
-):
-    """Analyze text for AI-generated content detection."""
-    analysis_id = str(uuid.uuid4())
-    
-    logger.info(
-        f"Text analysis request received",
-        extra={
-            "analysis_id": analysis_id,
-            "text_length": len(text),
-            "correlation_id": deps.correlation_id
-        }
-    )
-    
-    try:
-        # Validate text
-        text = deps.sanitizer.validate_text(text)
-        
-        # Create options
-        options = AnalyzeOptions(
-            modalities=[Modality.TEXT],
-            generate_report=generate_report,
-            generate_heatmaps=False
-        )
-        
-        # Create file input for text
-        import hashlib
-        text_hash = hashlib.sha256(text.encode()).hexdigest()
-        
-        file_input = FileInput(
-            file_id=f"text/{analysis_id}",
-            file_type="text/plain",
-            original_filename="text_input.txt",
-            file_hash=text_hash,
-            file_size=len(text.encode())
-        )
-        
-        # Create analysis document
-        analysis = AnalysisDocument(
-            analysis_id=analysis_id,
-            status=AnalysisStatus.PENDING,
-            created_at=datetime.now(timezone.utc),
-            input=file_input,
-            options=options
-        )
-        
-        # Insert into database
-        await deps.db.insert_analysis(analysis)
-        
-        # Store text content for processing
-        await deps.storage.ensure_default_buckets()
-        await deps.storage.upload_file(
-            file=text.encode(),
-            bucket=deps.storage.bucket_uploads,
-            object_key=f"uploads/{analysis_id}/text_input.txt",
-            content_type="text/plain"
-        )
-        
-        # Queue analysis job
-        try:
-            orchestrator = await get_orchestrator()
-            await orchestrator.enqueue_analysis(
-                analysis_id=analysis_id,
-                options=options.model_dump()
-            )
-        except Exception as e:
-            logger.warning(f"Failed to enqueue text analysis: {e}")
-        
-        logger.info(f"Text analysis created: {analysis_id}")
-        
-        return AnalysisResponse(
-            analysis_id=analysis_id,
-            status=AnalysisStatus.PENDING,
-            created_at=analysis.created_at
-        )
-        
-    except ValidationError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=e.to_dict()
-        )
-
-
 # ============== UTILITY ENDPOINTS ==============
 
 @router.get(
@@ -546,111 +443,10 @@ async def analyze_text(
 async def health_check(
     db: DatabaseClient = Depends(get_db),
     storage: StorageClient = Depends(get_storage),
-    engine: InferenceEngine = Depends(get_engine)
 ):
     """Health check endpoint for load balancers and model status monitoring."""
-    health = {
-        "status": "healthy",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": config.api_version,
-        "components": {}
-    }
-    
-    # Check database
-    try:
-        await db.db.command("ping")
-        health["components"]["database"] = "healthy"
-    except Exception as e:
-        health["components"]["database"] = f"unhealthy: {str(e)}"
-        health["status"] = "degraded"
-    
-    # Check storage
-    try:
-        exists = await storage._run_sync(
-            storage._client.bucket_exists,
-            storage.bucket_uploads
-        )
-        health["components"]["storage"] = "healthy" if exists else "bucket_missing"
-    except Exception as e:
-        health["components"]["storage"] = f"unhealthy: {str(e)}"
-        health["status"] = "degraded"
-    
-    # Check Redis
-    try:
-        import redis.asyncio as aioredis
-        redis_client = aioredis.from_url(config.redis_url, decode_responses=True)
-        await redis_client.ping()
-        await redis_client.close()
-        health["components"]["redis"] = "healthy"
-    except Exception as e:
-        health["components"]["redis"] = f"unhealthy: {str(e)}"
-        health["status"] = "degraded"
-    
-    # Check Celery
-    try:
-        from processing.tasks import celery_app
-        inspect = celery_app.control.inspect()
-        stats = inspect.stats()
-        if stats:
-            active_workers = len(stats)
-            health["components"]["celery"] = {
-                "status": "healthy",
-                "active_workers": active_workers
-            }
-        else:
-            health["components"]["celery"] = {
-                "status": "no_workers",
-                "active_workers": 0
-            }
-            health["status"] = "degraded"
-    except Exception as e:
-        health["components"]["celery"] = f"unhealthy: {str(e)}"
-        health["status"] = "degraded"
-    
-    # Check AI models status
-    try:
-        from models.manager import get_model_manager
-        manager = get_model_manager()
-        
-        loaded_models = manager.get_loaded_models()
-        vram_used = manager.get_vram_usage()
-        vram_available = manager.get_available_vram()
-        model_stats = manager.get_model_stats()
-        
-        # Determine model health
-        if len(loaded_models) >= 3:
-            models_status = "healthy"
-        elif len(loaded_models) >= 1:
-            models_status = "degraded"
-            health["status"] = "degraded"
-        else:
-            models_status = "unhealthy"
-            health["status"] = "degraded"
-        
-        health["components"]["models"] = {
-            "status": models_status,
-            "loaded": len(loaded_models),
-            "model_names": loaded_models,
-            "vram_used_mb": vram_used,
-            "vram_available_mb": vram_available,
-            "details": {
-                name: {
-                    "vram_mb": stats["vram_mb"],
-                    "use_count": stats["use_count"],
-                    "age_seconds": round(stats["age_seconds"], 2)
-                }
-                for name, stats in model_stats.items()
-            }
-        }
-        
-    except Exception as e:
-        health["components"]["models"] = {
-            "status": f"unhealthy: {str(e)}",
-            "loaded": 0
-        }
-        health["status"] = "degraded"
-    
-    return health
+    from api.health import run_health_check
+    return await run_health_check(db, storage)
 
 
 @router.get(
@@ -708,8 +504,7 @@ async def list_models():
 async def get_stats(
     db: DatabaseClient = Depends(get_db)
 ):
-    """Get analysis statistics."""
-    # Count by status
+    """Get analysis statistics using efficient count queries."""
     stats = {
         "total": 0,
         "by_status": {},
@@ -717,8 +512,7 @@ async def get_stats(
     }
     
     for status_val in AnalysisStatus:
-        analyses = await db.list_analyses(status=status_val, limit=0)
-        count = len(analyses)
+        count = await db.count_analyses(status=status_val)
         stats["by_status"][status_val.value] = count
         stats["total"] += count
     
@@ -829,6 +623,154 @@ async def get_heatmaps(
     except Exception as e:
         logger.warning(f"Failed to list heatmaps: {e}")
         return {"heatmaps": [], "count": 0}
+
+
+@router.get(
+    "/analyze/{analysis_id}/xai",
+    summary="Get XAI explanations",
+    description="Get Explainable AI explanations including feature importance, scientific references, and evidence package",
+    responses={
+        200: {"description": "XAI data for the analysis"},
+        404: {"model": ErrorResponse, "description": "Analysis not found"}
+    }
+)
+async def get_xai_explanations(
+    analysis_id: str = Path(..., description="Analysis ID"),
+    db: DatabaseClient = Depends(get_db),
+    storage: StorageClient = Depends(get_storage)
+):
+    """Get XAI explanations, feature importance, and evidence package."""
+    analysis = await db.get_analysis(analysis_id)
+
+    if analysis is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "ANALYSIS_NOT_FOUND", "message": f"Analysis not found: {analysis_id}"}
+        )
+
+    # Build XAI response from AnalysisDocument fields
+    explanation = analysis.explanation
+    evidence_pkg = analysis.evidence_package
+
+    xai_response = {
+        "analysis_id": analysis_id,
+        "image_xai": None,
+        "video_xai": None,
+        "audio_xai": None,
+        "text_xai": None,
+        "evidence_package": evidence_pkg.model_dump() if evidence_pkg else None,
+    }
+
+    summary_text = explanation.summary if explanation else ""
+    confidence_rationale = explanation.confidence_rationale if explanation else ""
+    methodology = explanation.methodology_used if explanation else []
+
+    # Populate image XAI
+    if analysis.image_result:
+        img = analysis.image_result
+        xai_response["image_xai"] = {
+            "explanation": {
+                "summary": summary_text,
+                "confidence_rationale": confidence_rationale,
+                "methodology_used": methodology,
+            },
+            "manipulation_regions": [
+                mr.model_dump() for mr in (img.manipulation_regions or [])
+            ],
+            "heatmap_urls": [img.heatmap_url] if img.heatmap_url else [],
+            "overlay_url": img.heatmap_url,
+        }
+
+    # Populate video XAI
+    if analysis.video_result:
+        vid = analysis.video_result
+        xai_response["video_xai"] = {
+            "explanation": {
+                "summary": summary_text,
+                "confidence_rationale": confidence_rationale,
+                "methodology_used": methodology,
+            },
+            "manipulation_regions": [],
+            "heatmap_urls": vid.frame_heatmap_urls or [],
+            "temporal_heatmap_url": vid.temporal_heatmap_url,
+        }
+
+    # Populate audio XAI
+    if analysis.audio_result:
+        aud = analysis.audio_result
+        xai_response["audio_xai"] = {
+            "explanation": {
+                "summary": summary_text,
+                "confidence_rationale": confidence_rationale,
+                "methodology_used": methodology,
+            },
+            "artifact_regions": [
+                ar.model_dump() for ar in (aud.artifact_regions or [])
+            ],
+            "spectrogram_overlay_url": aud.spectrogram_url,
+        }
+
+    # Populate text XAI
+    if analysis.text_result:
+        txt = analysis.text_result
+        xai_response["text_xai"] = {
+            "explanation": {
+                "summary": summary_text,
+                "confidence_rationale": confidence_rationale,
+                "methodology_used": methodology,
+            },
+            "token_attributions": [
+                ta.model_dump() for ta in (txt.token_attributions or [])
+            ],
+        }
+
+    return xai_response
+
+
+@router.get(
+    "/analyze/{analysis_id}/xai/heatmaps",
+    summary="Get XAI heatmap overlays",
+    description="Get heatmap overlay URLs for XAI visualization",
+    responses={
+        200: {"description": "XAI heatmap URLs"},
+        404: {"model": ErrorResponse, "description": "Analysis not found"}
+    }
+)
+async def get_xai_heatmaps(
+    analysis_id: str = Path(..., description="Analysis ID"),
+    db: DatabaseClient = Depends(get_db),
+    storage: StorageClient = Depends(get_storage)
+):
+    """Get XAI heatmap overlay URLs from the evidence package."""
+    analysis = await db.get_analysis(analysis_id)
+
+    if analysis is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error_code": "ANALYSIS_NOT_FOUND", "message": f"Analysis not found: {analysis_id}"}
+        )
+
+    heatmaps = []
+
+    # Get heatmaps from evidence package
+    if analysis.evidence_package and analysis.evidence_package.visual_evidence:
+        for ve in analysis.evidence_package.visual_evidence:
+            if ve.artifact_type in ("heatmap", "overlay"):
+                heatmaps.append({
+                    "type": ve.artifact_type,
+                    "url": ve.url,
+                    "description": ve.description,
+                })
+
+    # Also include direct heatmap URL from image result
+    if analysis.image_result and analysis.image_result.heatmap_url:
+        heatmaps.append({
+            "type": "gradcam_overlay",
+            "url": analysis.image_result.heatmap_url,
+            "description": "GradCAM++ attention overlay",
+        })
+
+    return {"heatmaps": heatmaps, "count": len(heatmaps)}
 
 
 # Export router

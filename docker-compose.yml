@@ -1,0 +1,297 @@
+# Argus Core - Full Stack Docker Compose
+# Production-ready multi-container deployment with ONNX Runtime and ML support
+
+services:
+  # ============================================
+  # Infrastructure Services
+  # ============================================
+  
+  # Redis - Message Broker & Cache
+  redis:
+    image: redis:7-alpine
+    container_name: argus-redis
+    restart: unless-stopped
+    # Port 6379 available internally on argus-network
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - argus-network
+
+  # MongoDB - Primary Database
+  mongodb:
+    image: mongo:7
+    container_name: argus-mongodb
+    restart: unless-stopped
+    # Port 27017 available internally on argus-network
+    expose:
+      - "27017"
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-argusadmin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-argussecret123}
+      MONGO_INITDB_DATABASE: argus_core
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    networks:
+      - argus-network
+
+  # MinIO - S3-Compatible Object Storage
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: argus-minio
+    restart: unless-stopped
+    # Port 9000 exposed for presigned URL access; console 9001 is internal only
+    ports:
+      - "9000:9000"
+    expose:
+      - "9001"
+    volumes:
+      - minio_data:/data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-argusadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-argussecret123}
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    networks:
+      - argus-network
+
+  # ============================================
+  # Application Services
+  # ============================================
+
+  # Backend API Server
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    container_name: argus-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Database (matching config.py variable names)
+      MONGO_URL: mongodb://${MONGO_USER:-argusadmin}:${MONGO_PASSWORD:-argussecret123}@mongodb:27017/argus_core?authSource=admin
+      DB_NAME: argus_core
+      # Redis
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      # MinIO
+      MINIO_ENDPOINT: minio:9000
+      MINIO_EXTERNAL_ENDPOINT: localhost:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-argusadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-argussecret123}
+      MINIO_SECURE: "false"
+      # Application
+      ENVIRONMENT: production
+      DEBUG: "false"
+      LOG_LEVEL: INFO
+      # Security
+      JWT_SECRET: ${JWT_SECRET:-change-this-in-production}
+      API_KEY_SALT: ${API_KEY_SALT:-change-this-in-production}
+      # Model Configuration
+      MODEL_PATH: /models
+      MODEL_CACHE_DIR: /models
+      USE_GPU: "false"
+      GPU_MEMORY_LIMIT_MB: 3500
+      # Model Download Settings
+      AUTO_DOWNLOAD_MODELS: "true"
+      DOWNLOAD_ON_STARTUP: "true"
+      HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
+      # HuggingFace Cache
+      HF_HOME: /app/.cache
+      TRANSFORMERS_CACHE: /app/.cache
+      # Feature Flags
+      ENABLE_GRAD_CAM: "true"
+      ENABLE_REPORTS: "true"
+    volumes:
+      - backend_models:/models
+      - backend_logs:/app/logs
+      - backend_storage:/app/storage_fallback
+      - backend_cache:/app/.cache
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    networks:
+      - argus-network
+
+  # Celery Worker - Async Task Processing
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    container_name: argus-celery-worker
+    restart: unless-stopped
+    command: >
+      celery -A core.orchestrator.celery_app worker
+      --loglevel=info
+      --concurrency=4
+      --pool=prefork
+      -Q celery,preprocessing,analysis,aggregation,reports
+    environment:
+      # Database (matching config.py variable names)
+      MONGO_URL: mongodb://${MONGO_USER:-argusadmin}:${MONGO_PASSWORD:-argussecret123}@mongodb:27017/argus_core?authSource=admin
+      DB_NAME: argus_core
+      # Redis
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      # MinIO
+      MINIO_ENDPOINT: minio:9000
+      MINIO_EXTERNAL_ENDPOINT: localhost:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-argusadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-argussecret123}
+      MINIO_SECURE: "false"
+      # Application
+      ENVIRONMENT: production
+      DEBUG: "false"
+      LOG_LEVEL: INFO
+      # Model Configuration
+      MODEL_PATH: /models
+      MODEL_CACHE_DIR: /models
+      USE_GPU: "false"
+      GPU_MEMORY_LIMIT_MB: 3500
+      # Model Download Settings
+      AUTO_DOWNLOAD_MODELS: "true"
+      DOWNLOAD_ON_STARTUP: "true"
+      HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
+      # HuggingFace Cache
+      HF_HOME: /app/.cache
+      TRANSFORMERS_CACHE: /app/.cache
+      # Feature Flags
+      ENABLE_GRAD_CAM: "true"
+      ENABLE_REPORTS: "true"
+    volumes:
+      - backend_models:/models
+      - backend_logs:/app/logs
+      - backend_storage:/app/storage_fallback
+      - backend_cache:/app/.cache
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A core.orchestrator.celery_app inspect ping --timeout 5 || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
+    networks:
+      - argus-network
+
+  # Frontend - Next.js Application
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: runner
+    container_name: argus-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://backend:8000}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://backend:8000}
+    depends_on:
+      backend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/ || curl -sf http://127.0.0.1:3000/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - argus-network
+
+# ============================================
+# Networks
+# ============================================
+networks:
+  argus-network:
+    driver: bridge
+    name: argus-network
+
+# ============================================
+# Volumes
+# ============================================
+volumes:
+  redis_data:
+    name: argus-redis-data
+  mongodb_data:
+    name: argus-mongodb-data
+  mongodb_config:
+    name: argus-mongodb-config
+  minio_data:
+    name: argus-minio-data
+  backend_models:
+    name: argus-backend-models
+  backend_logs:
+    name: argus-backend-logs
+  backend_storage:
+    name: argus-backend-storage
+  backend_cache:
+    name: argus-backend-cache

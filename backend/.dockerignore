@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+ENV/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# Storage fallback (local development)
+storage_fallback/
+
+# Models (downloaded at runtime) - only exclude weight files, not the Python module
+models/*.onnx
+models/*.pt
+models/*.pth
+models/*.bin
+models/*.h5
+models/*.pb
+!models/__init__.py
+!models/*.py
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.docker/
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+docs/

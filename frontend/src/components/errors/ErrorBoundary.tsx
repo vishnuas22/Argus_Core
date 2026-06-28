@@ -186,7 +186,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       if (typeof fallback === 'function' && error && errorInfo) {
         return fallback(error, errorInfo);
       }
-      return fallback;
+      // Only return fallback if it's not a function (it's a ReactNode)
+      if (typeof fallback !== 'function') {
+        return fallback;
+      }
     }
 
     // Default fallback UI

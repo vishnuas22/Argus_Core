@@ -38,7 +38,7 @@ export type Verdict =
 /**
  * Supported media modalities
  */
-export type Modality = 'video' | 'audio' | 'image' | 'text';
+export type Modality = 'video' | 'audio' | 'image';
 
 /**
  * Defense level for adversarial protection
@@ -208,26 +208,37 @@ export interface AudioResult {
   spectrogram_url?: string;
 }
 
-// ============== TEXT RESULTS ==============
+// ============== IMAGE RESULTS ==============
 
 /**
- * Text analysis result for AI-generated content
- * Matches backend TextResult from schemas/schemas.py
+ * Image analysis result for AI-generated content
+ * Matches backend ImageResult from schemas/schemas.py
  */
-export interface TextResult {
-  score: number;
-  confidence: number;
-  model_used: string;
-  /** Probability text is AI-generated (0-1) */
-  ai_probability: number;
-  /** GPT-2 perplexity score */
-  perplexity_score: number;
-  /** Sentence length variance (burstiness) */
-  burstiness_score: number;
-  /** RADAR classifier score */
-  radar_score?: number;
-  /** Word count analyzed */
-  word_count?: number;
+export interface ImageResult {
+  /** Probability image is AI-generated (0-1) */
+  ai_generated_probability: number;
+  /** Probability image is manipulated/deepfake (0-1) */
+  fake_probability: number;
+  /** Whether face was detected */
+  face_detected: boolean;
+  /** Number of faces detected */
+  num_faces: number;
+  /** Per-face manipulation scores */
+  face_manipulation_scores: number[];
+  /** URL to GradCAM heatmap */
+  heatmap_url?: string;
+  /** DCT frequency anomaly score */
+  dct_anomaly_score: number;
+  /** Spectral flatness measure */
+  spectral_flatness: number;
+  /** SigLIP classifier score */
+  siglip_score: number;
+  /** EfficientNet classifier score */
+  efficientnet_score: number;
+  /** Detected manipulation regions */
+  manipulation_regions: ManipulationRegion[];
+  /** Confidence interval for AI probability */
+  confidence_interval?: [number, number];
 }
 
 // ============== METADATA RESULTS ==============
@@ -301,9 +312,13 @@ export interface AnalysisDetailResponse extends AnalysisResponse {
   input?: FileInput;
   video_result?: VideoResult;
   audio_result?: AudioResult;
-  text_result?: TextResult;
+  image_result?: ImageResult;
   metadata_result?: MetadataResult;
   processing_time_seconds?: number;
+  // XAI Enhancement Fields
+  evidence_package?: EvidencePackage;
+  feature_importance: FeatureImportance[];
+  scientific_references: ScientificReference[];
 }
 
 /**
@@ -428,6 +443,217 @@ export interface ListParams {
   status?: AnalysisStatus;
   limit?: number;
   offset?: number;
+}
+
+// ============== XAI TYPES ==============
+
+/**
+ * Audio artifact region detected in spectrogram
+ * Maps to backend AudioArtifactRegion schema
+ */
+export interface AudioArtifactRegion {
+  start_time: number;      // Start time in seconds
+  end_time: number;        // End time in seconds
+  freq_low: number;        // Low frequency bound in Hz
+  freq_high: number;       // High frequency bound in Hz
+  artifact_type: 'vocoder' | 'spectral_gap' | 'harmonic_inconsistency' | 'high_energy_anomaly';
+  confidence: number;      // Detection confidence (0-1)
+}
+
+/**
+ * Token attribution for text XAI
+ * Shows which tokens contribute to AI detection
+ */
+export interface TokenAttribution {
+  token: string;           // The token/word
+  attribution_score: number;  // Contribution to AI detection (-1 to 1)
+  position: number;        // Token position in text
+  is_ai_indicator: boolean;   // Whether this token indicates AI generation
+}
+
+/**
+ * Perplexity breakdown by text segment
+ */
+export interface PerplexityBreakdown {
+  segment: string;         // Text segment
+  perplexity: number;      // Perplexity score
+  is_anomalous: boolean;   // Whether segment is anomalous
+}
+
+/**
+ * Feature importance for model decision
+ */
+export interface FeatureImportance {
+  feature_name: string;    // Feature identifier
+  importance_score: number; // Importance (0-1)
+  contribution_direction: 'increases_fake' | 'decreases_fake';
+  confidence: number;      // Confidence in importance (0-1)
+  feature_type?: string;   // Type: 'spatial', 'frequency', 'temporal', 'linguistic', 'acoustic'
+  description?: string;    // Human-readable description
+  modality?: string;       // Modality this feature belongs to
+}
+
+/**
+ * Manipulation region in image/video
+ */
+export interface ManipulationRegion {
+  region_type: string;     // Region type: face, mouth, background, etc.
+  location: string;        // Description or coordinates
+  confidence: number;      // Detection confidence (0-1)
+  frame_indices?: number[]; // Affected frame indices
+}
+
+/**
+ * Scientific reference for methodology
+ */
+export interface ScientificReference {
+  method_name: string;     // Method name (e.g., "GradCAM++")
+  citation: string;        // Full academic citation
+  doi?: string;            // DOI link
+  accuracy_metrics?: string; // Known accuracy metrics
+}
+
+/**
+ * Visual evidence for reports
+ */
+export interface VisualEvidence {
+  artifact_type: 'heatmap' | 'spectrogram' | 'frequency_plot' | 'overlay' | 'temporal_chart' | 'token_highlight' | 'attention_map';
+  url: string;             // MinIO presigned URL
+  description: string;     // Human-readable description
+  frame_index?: number;    // For video frames
+  timestamp_seconds?: number; // For audio/video timestamps
+  integrity_hash: string;  // SHA-256 hash for chain of custody
+  created_at?: string;     // ISO timestamp
+  width?: number;          // Image width in pixels
+  height?: number;         // Image height in pixels
+}
+
+/**
+ * Complete XAI explanation package
+ */
+export interface XAIExplanation {
+  feature_importance: FeatureImportance[];
+  visual_evidence: VisualEvidence[];
+  scientific_references: ScientificReference[];
+  reproducibility_hash: string;
+  confidence_interval: [number, number];  // Tuple of (lower, upper)
+  model_versions: Record<string, string>;
+}
+
+/**
+ * Evidence package for court-admissible forensic reports
+ */
+export interface EvidencePackage {
+  analysis_id?: string;
+  visual_evidence: VisualEvidence[];
+  feature_importance: FeatureImportance[];
+  scientific_references?: ScientificReference[];
+  reproducibility_hash?: string;
+  confidence_interval: [number, number];
+  model_versions: Record<string, string>;
+  // Additional fields from backend
+  token_attributions?: TokenAttribution[] | null;
+  perplexity_breakdown?: PerplexityBreakdown[] | null;
+  audio_artifact_regions?: AudioArtifactRegion[] | null;
+  analysis_timestamp?: string;
+  integrity_hash?: string;
+  reproducibility_data?: Record<string, unknown>;
+}
+
+/**
+ * Extended AudioResult with XAI fields
+ */
+export interface AudioResultXAI extends AudioResult {
+  artifact_regions: AudioArtifactRegion[];
+  frequency_anomaly_score: number;
+  aasist_score: number;
+  xai_explanation?: XAIExplanation;
+}
+
+/**
+ * Extended SpatialResult with XAI fields
+ */
+export interface SpatialResultXAI extends SpatialResult {
+  dct_anomaly_score: number;
+  gan_fingerprint_detected: boolean;
+  manipulation_regions: ManipulationRegion[];
+  efficientnet_score: number;
+  clip_score: number;
+  xai_explanation?: XAIExplanation;
+}
+
+/**
+ * Extended TemporalResult with XAI fields
+ */
+export interface TemporalResultXAI extends TemporalResult {
+  motion_anomaly_score: number;
+  landmark_jitter_score: number;
+  xclip_score: number;
+}
+
+/**
+ * Extended VideoResult with XAI fields
+ */
+export interface VideoResultXAI extends VideoResult {
+  frame_heatmap_urls: string[];
+  temporal_heatmap_url?: string;
+  confidence_interval: [number, number];
+  spatial: SpatialResultXAI;
+  temporal: TemporalResultXAI;
+  xai_explanation?: XAIExplanation;
+}
+
+/**
+ * Extended analysis detail response with XAI data
+ */
+export interface AnalysisDetailResponseXAI extends AnalysisDetailResponse {
+  video_result?: VideoResultXAI;
+  audio_result?: AudioResultXAI;
+  xai_evidence_package?: {
+    feature_importance: FeatureImportance[];
+    visual_evidence: VisualEvidence[];
+    scientific_references: ScientificReference[];
+    reproducibility_hash: string;
+    confidence_interval: [number, number];
+  };
+}
+
+/**
+ * XAI heatmap response with metadata
+ */
+export interface XAIHeatmapResponse {
+  heatmaps: Array<{
+    key: string;
+    url: string;
+    frame_index?: number;
+    timestamp_ms?: number;
+    overlay_url?: string;  // Combined overlay URL
+  }>;
+  spectrogram_overlay?: {
+    url: string;
+    artifact_regions: AudioArtifactRegion[];
+  };
+  token_highlights?: Array<{
+    text: string;
+    highlights: Array<{
+      start: number;
+      end: number;
+      score: number;
+    }>;
+  }>;
+  count: number;
+}
+
+/**
+ * Modality-specific XAI data structure
+ * Used by XAI store and hooks
+ */
+export interface ModalityXAI {
+  explanation: XAIExplanation | null;
+  artifactRegions: AudioArtifactRegion[] | ManipulationRegion[];
+  tokenAttributions?: TokenAttribution[];
+  heatmapUrls: string[];
+  overlayUrl: string | null;
 }
 
 // ============== EXPORTS ==============

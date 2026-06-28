@@ -54,7 +54,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 // Result Components
 import { TrustScoreGauge, TrustScoreGaugeSkeleton } from './TrustScoreGauge';
 import { VerdictBadge, VerdictBadgeHero, VerdictBadgeSkeleton, getVerdictFromScore } from './VerdictBadge';
-import { ScoreBreakdown, ScoreBreakdownSkeleton } from './ScoreBreakdown';
+import { ScoreBreakdown as ScoreBreakdownComponent, ScoreBreakdownSkeleton } from './ScoreBreakdown';
 import { ExplanationPanel, ExplanationPanelSkeleton } from './ExplanationPanel';
 
 // Hooks
@@ -68,7 +68,6 @@ import type {
   Explanation,
   VideoResult,
   AudioResult,
-  TextResult,
   MetadataResult,
   ScoreBreakdown as ScoreBreakdownType
 } from '@/types/analysis';
@@ -250,9 +249,10 @@ export function ResultsPanel({
     ...analysis,
     video_result: undefined,
     audio_result: undefined,
-    text_result: undefined,
     metadata_result: undefined,
     processing_time_seconds: undefined,
+    feature_importance: [],
+    scientific_references: [],
   };
 
   return (
@@ -561,7 +561,7 @@ function ResultsPanelContent({
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <ScoreBreakdown breakdown={trustScore.breakdown} />
+                <ScoreBreakdownComponent breakdown={trustScore.breakdown} />
               </CardContent>
             </Card>
           )}

@@ -113,10 +113,19 @@ const DEFAULT_OPTIONS: Required<UseWebSocketOptions> = {
 };
 
 /**
- * Get WebSocket URL from environment
+ * Get WebSocket URL from environment with authentication token
  */
 function getWebSocketUrl(analysisId: string): string {
   const wsUrl = process.env.NEXT_PUBLIC_WS_URL || '';
+  
+  // Get auth token from localStorage for WebSocket authentication
+  let authToken: string | null = null;
+  if (typeof window !== 'undefined') {
+    authToken = localStorage.getItem('argus-auth-token');
+  }
+  
+  // Build base URL
+  let baseUrl: string;
   
   // Handle relative URL - construct from window.location
   if (typeof window !== 'undefined') {
@@ -125,17 +134,28 @@ function getWebSocketUrl(analysisId: string): string {
     
     // If WS_URL is a path (starts with /), use current host
     if (wsUrl.startsWith('/')) {
-      return `${protocol}//${host}${wsUrl}/ws/analysis/${analysisId}`;
+      baseUrl = `${protocol}//${host}${wsUrl}/ws/analysis/${analysisId}`;
     }
-    
     // If WS_URL is empty, use current host with /api prefix
-    if (!wsUrl) {
-      return `${protocol}//${host}/api/ws/analysis/${analysisId}`;
+    else if (!wsUrl) {
+      baseUrl = `${protocol}//${host}/api/ws/analysis/${analysisId}`;
     }
+    // Full URL provided
+    else {
+      baseUrl = `${wsUrl}/ws/analysis/${analysisId}`;
+    }
+  } else {
+    // SSR fallback
+    baseUrl = `${wsUrl}/ws/analysis/${analysisId}`;
   }
   
-  // Full URL provided
-  return `${wsUrl}/ws/analysis/${analysisId}`;
+  // Append auth token as query parameter if available
+  if (authToken) {
+    const separator = baseUrl.includes('?') ? '&' : '?';
+    return `${baseUrl}${separator}token=${encodeURIComponent(authToken)}`;
+  }
+  
+  return baseUrl;
 }
 
 // ============== HOOK ==============

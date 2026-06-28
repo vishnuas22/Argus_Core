@@ -310,9 +310,6 @@ class BaseAnalyzer(IAnalyzer):
                 ContentType.VIDEO_WITH_SPEECH,
                 ContentType.VIDEO_NO_SPEECH
             ],
-            Modality.TEXT: [
-                ContentType.TEXT_ONLY
-            ]
         }
         
         for modality in self._supported_modalities:
@@ -467,16 +464,21 @@ def compute_confidence(
     Args:
         scores: Array of individual scores
         num_samples: Number of samples analyzed
-        min_samples: Minimum samples for full confidence
+        min_samples: Minimum samples for full confidence (only affects multi-sample)
         
     Returns:
         Confidence score [0, 1]
     """
     if len(scores) == 0:
-        return 0.3
+        return 0.5  # Neutral confidence when no scores
     
-    # Sample count factor (more samples = higher confidence)
-    sample_factor = min(1.0, num_samples / min_samples)
+    # Sample count factor
+    # For single images (num_samples=1), use full confidence - this is the expected case
+    # For multiple samples, scale based on count
+    if num_samples == 1:
+        sample_factor = 1.0  # Single image is the normal case, not a low-confidence case
+    else:
+        sample_factor = min(1.0, num_samples / min_samples)
     
     # Consistency factor (lower variance = higher confidence)
     variance = np.var(scores)
@@ -490,7 +492,9 @@ def compute_confidence(
     # Combine factors
     confidence = sample_factor * consistency_factor * extremity_factor
     
-    return float(np.clip(confidence, 0.3, 0.95))
+    # Allow full range - don't artificially cap at 0.3 minimum
+    # Low confidence should only come from actual uncertainty signals
+    return float(np.clip(confidence, 0.1, 0.95))
 
 
 def detect_anomalies(
@@ -520,3 +524,109 @@ def detect_anomalies(
     anomaly_indices = np.where(z_scores > threshold)[0]
     
     return anomaly_indices.tolist()
+
+
+def infer_fake_class_index(
+    id2label: Optional[Dict[Any, Any]] = None,
+    class_labels: Optional[List[str]] = None,
+    default_index: int = 1
+) -> int:
+    """
+    Infer which class index corresponds to manipulated/fake content.
+    
+    Uses model labels when available to avoid hardcoded class-order bugs.
+    
+    Args:
+        id2label: Optional model id2label mapping
+        class_labels: Optional fallback labels list
+        default_index: Default fake index when labels are ambiguous
+        
+    Returns:
+        Index interpreted as fake/manipulated class
+    """
+    fake_tokens = (
+        "fake", "deepfake", "artificial", "synthetic",
+        "spoof", "ai", "generated", "manipulated", "forged"
+    )
+    real_tokens = ("real", "human", "authentic", "bonafide", "genuine", "natural")
+    
+    labels_by_index: Dict[int, str] = {}
+    
+    if id2label:
+        for raw_idx, raw_label in id2label.items():
+            try:
+                idx = int(raw_idx)
+            except (TypeError, ValueError):
+                continue
+            labels_by_index[idx] = str(raw_label).strip().lower()
+    
+    if class_labels:
+        for idx, label in enumerate(class_labels):
+            labels_by_index.setdefault(idx, str(label).strip().lower())
+    
+    if not labels_by_index:
+        return max(default_index, 0)
+    
+    def _contains_any_token(label_text: str, tokens: tuple) -> bool:
+        normalized = label_text.replace("-", " ").replace("_", " ").lower()
+        return any(token in normalized for token in tokens)
+    
+    fake_candidates = [
+        idx for idx, label in labels_by_index.items()
+        if _contains_any_token(label, fake_tokens)
+    ]
+    real_candidates = [
+        idx for idx, label in labels_by_index.items()
+        if _contains_any_token(label, real_tokens)
+    ]
+    
+    # Prefer explicit fake label
+    if fake_candidates:
+        return sorted(fake_candidates)[0]
+    
+    # If only real class is known in binary setup, choose the opposite class
+    if real_candidates and len(labels_by_index) == 2:
+        real_idx = sorted(real_candidates)[0]
+        other = [idx for idx in sorted(labels_by_index.keys()) if idx != real_idx]
+        if other:
+            return other[0]
+    
+    max_idx = max(labels_by_index.keys())
+    return min(max(default_index, 0), max_idx)
+
+
+def extract_fake_probabilities(
+    probabilities: np.ndarray,
+    fake_class_index: int,
+    apply_confidence_shrinkage: bool = True
+) -> np.ndarray:
+    """
+    Extract fake/manipulated probability from multi-class probabilities.
+    
+    Optionally shrinks uncertain predictions toward 0.5 to reduce
+    borderline false positives/false negatives.
+    
+    Args:
+        probabilities: Class probabilities, shape (N, C) or (C,)
+        fake_class_index: Index of fake/manipulated class
+        apply_confidence_shrinkage: Whether to calibrate low-confidence outputs
+        
+    Returns:
+        Array of fake probabilities, shape (N,)
+    """
+    probs = np.asarray(probabilities, dtype=np.float32)
+    if probs.ndim == 1:
+        probs = np.expand_dims(probs, 0)
+    
+    if probs.ndim != 2 or probs.shape[1] == 0:
+        return np.full((probs.shape[0] if probs.ndim > 0 else 1,), 0.5, dtype=np.float32)
+    
+    idx = int(np.clip(fake_class_index, 0, probs.shape[1] - 1))
+    fake_probs = probs[:, idx]
+    
+    if apply_confidence_shrinkage and probs.shape[1] >= 2:
+        max_probs = np.max(probs, axis=1)
+        confidence_scale = np.clip((max_probs - 0.5) * 2.0, 0.0, 1.0)
+        fake_probs = 0.5 + (fake_probs - 0.5) * confidence_scale
+    
+    return np.clip(fake_probs, 0.0, 1.0)

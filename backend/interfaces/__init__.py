@@ -3,10 +3,10 @@
 
 from .analyzer import IAnalyzer
 from .storage import IStorage
-from .model import IModel
+from .model import ModelInfo
 
 __all__ = [
     "IAnalyzer",
     "IStorage",
-    "IModel",
+    "ModelInfo",
 ]

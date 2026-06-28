@@ -37,6 +37,32 @@ logger = get_logger(__name__)
 # WebSocket router
 router = APIRouter(tags=["websocket"])
 
+# Persistent Redis connection pool for publishing (avoids connection-per-call)
+_redis_publish_pool: Optional[Any] = None
+
+
+async def _get_redis_publish_client() -> Any:
+    """
+    Get or create a persistent async Redis client for publishing.
+    
+    Uses a module-level singleton to avoid creating new connections
+    on every progress update, which would exhaust file descriptors
+    under load.
+    """
+    global _redis_publish_pool
+    if _redis_publish_pool is None:
+        try:
+            import redis.asyncio as aioredis
+            _redis_publish_pool = aioredis.from_url(
+                config.redis_url,
+                max_connections=10,
+                decode_responses=True,
+            )
+        except Exception as exc:
+            logger.error(f"Failed to create Redis publish pool: {exc}")
+            return None
+    return _redis_publish_pool
+
 
 # ============== CONNECTION MANAGER ==============
 
@@ -264,7 +290,7 @@ class ConnectionManager:
             try:
                 await self._redis_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Redis listener task cancelled")
             self._redis_task = None
             
         logger.info("Redis Pub/Sub listener stopped")
@@ -335,10 +361,13 @@ manager = ConnectionManager()
 @router.websocket("/ws/analysis/{analysis_id}")
 async def analysis_progress(
     websocket: WebSocket,
-    analysis_id: str
+    analysis_id: str,
+    token: Optional[str] = None,
 ):
     """
     WebSocket endpoint for analysis progress updates.
+    
+    Requires JWT authentication via query parameter: ?token=<jwt_token>
     
     Streams real-time progress updates for a specific analysis.
     
@@ -351,7 +380,36 @@ async def analysis_progress(
     Args:
         websocket: WebSocket connection
         analysis_id: Analysis ID to subscribe to
+        token: JWT token from query parameter
     """
+    authenticated = False
+    user_id = None
+    
+    if token:
+        try:
+            import jwt
+            from config import config as cfg
+            payload = jwt.decode(
+                token,
+                cfg.jwt_secret,
+                algorithms=[cfg.jwt_algorithm]
+            )
+            user_id = payload.get("sub")
+            authenticated = True
+        except jwt.ExpiredSignatureError:
+            logger.warning("WebSocket auth failed: token expired")
+            authenticated = False
+        except jwt.InvalidTokenError as exc:
+            logger.warning(f"WebSocket auth failed: invalid token - {exc}")
+            authenticated = False
+        except Exception as exc:
+            logger.error(f"WebSocket auth unexpected error: {exc}")
+            authenticated = False
+    
+    if not authenticated:
+        await websocket.close(code=4001, reason="Authentication required")
+        return
+    
     await manager.connect(websocket, analysis_id)
     
     try:
@@ -416,16 +474,48 @@ async def analysis_progress(
 
 
 @router.websocket("/ws/updates")
-async def global_updates(websocket: WebSocket):
+async def global_updates(
+    websocket: WebSocket,
+    token: Optional[str] = None,
+):
     """
     WebSocket endpoint for global system updates.
+    
+    Requires JWT authentication via query parameter: ?token=<jwt_token>
     
     Streams updates about all analyses (for admin dashboards).
     Clients can subscribe/unsubscribe to specific analyses dynamically.
     
     Args:
         websocket: WebSocket connection
+        token: JWT token from query parameter
     """
+    authenticated = False
+    
+    if token:
+        try:
+            import jwt
+            from config import config as cfg
+            payload = jwt.decode(
+                token,
+                cfg.jwt_secret,
+                algorithms=[cfg.jwt_algorithm]
+            )
+            authenticated = True
+        except jwt.ExpiredSignatureError:
+            logger.warning("WebSocket auth failed: token expired")
+            authenticated = False
+        except jwt.InvalidTokenError as exc:
+            logger.warning(f"WebSocket auth failed: invalid token - {exc}")
+            authenticated = False
+        except Exception as exc:
+            logger.error(f"WebSocket auth unexpected error: {exc}")
+            authenticated = False
+    
+    if not authenticated:
+        await websocket.close(code=4001, reason="Authentication required")
+        return
+    
     await manager.connect(websocket)
     
     try:
@@ -526,14 +616,14 @@ async def send_progress_update(
         }
     )
     
-    # Also publish to Redis for cross-worker delivery
+    # Also publish to Redis for cross-worker delivery (persistent pool)
     try:
-        import redis
-        r = redis.from_url(config.redis_url)
-        r.publish(
-            f"argus:progress:{analysis_id}",
-            json.dumps(update.model_dump(mode="json"))
-        )
+        r = await _get_redis_publish_client()
+        if r:
+            await r.publish(
+                f"argus:progress:{analysis_id}",
+                json.dumps(update.model_dump(mode="json"))
+            )
     except Exception as e:
         logger.warning(f"Failed to publish to Redis: {e}")
 
@@ -606,7 +696,17 @@ async def startup_websocket():
 
 async def shutdown_websocket():
     """Cleanup WebSocket manager on application shutdown."""
+    global _redis_publish_pool
+    
     await manager.stop_redis_listener()
+    
+    # Close Redis publish pool
+    if _redis_publish_pool is not None:
+        try:
+            await _redis_publish_pool.aclose()
+            _redis_publish_pool = None
+        except Exception:
+            logger.warning("Failed to close Redis publish pool")
     
     # Close all active connections
     for websocket in list(manager.active_connections):

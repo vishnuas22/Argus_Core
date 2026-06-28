@@ -188,3 +188,15 @@ class AuthorizationError(ArgusError):
             f"Not authorized to {action} {resource}",
             {"resource": resource, "action": action}
         )
+
+
+class XAIError(ArgusError):
+    """Raised when XAI explanation generation fails."""
+    status_code = 500
+    error_code = "XAI_GENERATION_FAILED"
+    
+    def __init__(self, reason: str = "Unknown error"):
+        super().__init__(
+            f"XAI explanation generation failed: {reason}",
+            {"reason": reason}
+        )
