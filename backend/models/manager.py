@@ -28,9 +28,10 @@ import os
 
 from config import config
 from models.registry import ModelRegistry, ModelMetadata, get_model_registry
-from interfaces.model import IModel, ModelInfo
+from interfaces.model import ModelInfo
 from utils.errors import ModelLoadError, InferenceError, ConfigurationError
 from utils.logging import get_logger
+from utils.metrics import record_model_load, record_model_unload, update_vram_usage
 from utils.hardware import (
     get_hardware_info, 
     HardwareInfo, 
@@ -45,14 +46,17 @@ logger = get_logger(__name__)
 class LoadedModel:
     """
     Container for a loaded model with usage tracking.
+    Supports both ONNX Runtime sessions and PyTorch models.
     """
     name: str
-    session: Any  # ONNX Runtime InferenceSession
+    session: Any  # ONNX Runtime InferenceSession or PyTorch model
     metadata: ModelMetadata
     vram_mb: int
     loaded_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.time)
     use_count: int = 0
+    is_pytorch: bool = False  # Flag to indicate PyTorch model
+    processor: Any = None  # Tokenizer/Processor for PyTorch models
     
     def touch(self) -> None:
         """Update last used timestamp and increment use count."""
@@ -143,7 +147,11 @@ class ModelManager:
                 # Move to end (most recently used)
                 self._loaded.move_to_end(model_name)
                 logger.debug(f"Model cache hit: {model_name}")
-                return self._loaded[model_name].session
+                loaded = self._loaded[model_name]
+                # For PyTorch models, return tuple (model, processor)
+                if loaded.is_pytorch:
+                    return (loaded.session, loaded.processor)
+                return loaded.session
         
         # Get metadata
         try:
@@ -167,13 +175,27 @@ class ModelManager:
         # Load the model
         session = await self._load_model(metadata)
         
+        # Check if this is a PyTorch model (returns tuple of model, processor)
+        is_pytorch = metadata.download_url and metadata.download_url.startswith("pytorch:")
+        
         with self._lock:
-            self._loaded[model_name] = LoadedModel(
-                name=model_name,
-                session=session,
-                metadata=metadata,
-                vram_mb=metadata.vram_mb
-            )
+            if is_pytorch:
+                model, processor = session
+                self._loaded[model_name] = LoadedModel(
+                    name=model_name,
+                    session=model,
+                    metadata=metadata,
+                    vram_mb=metadata.vram_mb,
+                    is_pytorch=True,
+                    processor=processor
+                )
+            else:
+                self._loaded[model_name] = LoadedModel(
+                    name=model_name,
+                    session=session,
+                    metadata=metadata,
+                    vram_mb=metadata.vram_mb
+                )
             self._current_vram_mb += metadata.vram_mb
         
         logger.info(
@@ -200,21 +222,8 @@ class ModelManager:
         Returns:
             Compatible model name
         """
-        # Check if model requires GPU and we're on CPU
-        if self.hardware.accelerator == AcceleratorType.CPU:
-            # Map GPU-required models to CPU alternatives
-            cpu_alternatives = {
-                "xclip_temporal": "efficientnet_b3_spatial",  # Use frame-by-frame
-                "lipinc_v2": "efficientnet_b3_spatial",  # Use spatial analysis
-            }
-            
-            if model_name in cpu_alternatives:
-                alt_model = cpu_alternatives[model_name]
-                logger.info(
-                    f"Model {model_name} requires GPU, using alternative: {alt_model}"
-                )
-                return alt_model
-        
+        # Do not auto-remap cross-modality models here.
+        # Analyzer-level fallback logic handles degraded paths explicitly.
         return model_name
     
     def _validate_onnx_model(self, model_path: str) -> Tuple[bool, str]:
@@ -296,13 +305,17 @@ class ModelManager:
         """
         Download model file if not present locally.
         
-        Attempts to download from HuggingFace, falls back to placeholder.
+        Attempts to download from HuggingFace. Raises ModelLoadError if
+        model cannot be downloaded - no placeholder fallback.
         
         Args:
             metadata: Model metadata with path info
             
         Returns:
             Path to model file (downloaded or existing)
+            
+        Raises:
+            ModelLoadError: If model file not found and download fails
         """
         model_path = metadata.path
         alt_path = os.path.join(self.model_cache_dir, os.path.basename(model_path))
@@ -331,94 +344,59 @@ class ModelManager:
                 return str(downloaded_path)
                 
         except Exception as e:
-            logger.warning(f"Model download failed: {e}")
+            logger.error(f"Model download failed for {metadata.name}: {e}")
         
-        # Fall back to placeholder creation
-        logger.info(f"Creating placeholder model for: {metadata.name}")
-        
-        try:
-            os.makedirs(self.model_cache_dir, exist_ok=True)
-            
-            import onnx
-            from onnx import helper, TensorProto
-            
-            input_shape = metadata.input_shape
-            output_shape = metadata.output_shape or [1, metadata.num_classes]
-            
-            input_tensor = helper.make_tensor_value_info(
-                'input',
-                TensorProto.FLOAT,
-                input_shape
-            )
-            
-            output_tensor = helper.make_tensor_value_info(
-                'output',
-                TensorProto.FLOAT,
-                output_shape
-            )
-            
-            node = helper.make_node(
-                'Identity',
-                inputs=['input'],
-                outputs=['output'],
-            )
-            
-            graph = helper.make_graph(
-                [node],
-                f'{metadata.name}_placeholder',
-                [input_tensor],
-                [output_tensor],
-            )
-            
-            model = helper.make_model(graph, producer_name='argus-core')
-            
-            onnx.save(model, alt_path)
-            logger.info(f"Created placeholder ONNX model: {alt_path}")
-            
-            return alt_path
-            
-        except ImportError:
-            logger.warning("onnx package not available for creating placeholder models")
-            return model_path
-        except Exception as e:
-            logger.warning(f"Failed to create placeholder model: {e}")
-            return model_path
+        # No placeholder fallback - fail explicitly
+        raise ModelLoadError(
+            model_name=metadata.name,
+            reason=f"Model file not found and download failed. "
+                   f"Expected path: {model_path} or {alt_path}. "
+                   f"Please ensure model weights are available. "
+                   f"Check AUTO_START_CONFIGURATION.md for model setup instructions."
+        )
     
     async def _load_model(
         self,
         metadata: ModelMetadata
     ) -> Any:
         """
-        Load model from disk into ONNX Runtime session.
+        Load model from disk into ONNX Runtime session or PyTorch.
         
-        Downloads model if not present, then loads into ONNX Runtime.
+        Downloads model if not present, then loads into appropriate runtime.
+        Supports both ONNX and PyTorch (safetensors) model formats.
         
         Args:
             metadata: Model metadata with path and providers
             
         Returns:
-            ONNX Runtime InferenceSession
+            ONNX Runtime InferenceSession or PyTorch model tuple (model, processor)
         """
+        # Check if this is a PyTorch model (download_url starts with "pytorch:")
+        is_pytorch = metadata.download_url and metadata.download_url.startswith("pytorch:")
+        
+        if is_pytorch:
+            return await self._load_pytorch_model(metadata)
+        
+        # ONNX model loading
         model_path = await self._download_model_if_missing(metadata)
         
         if not os.path.exists(model_path):
-            logger.warning(
-                f"Model file not found even after download attempt: {model_path}. "
-                f"Creating placeholder session for development."
+            raise ModelLoadError(
+                model_name=metadata.name,
+                reason=f"Model file not found after download attempt: {model_path}"
             )
-            return self._create_placeholder_session(metadata)
         
-        # Check if this is a real model or placeholder
+        # Check if this is a real model or placeholder stub
         file_size = os.path.getsize(model_path)
-        is_placeholder = file_size < 10000
+        min_model_size = 10000  # 10KB minimum for real model weights
         
-        if is_placeholder:
-            logger.warning(
-                f"CRITICAL: Using PLACEHOLDER model for {metadata.name} - "
-                f"predictions will be heuristic-based, not from trained model. "
-                f"File size: {file_size} bytes (expected > 10MB for real models)"
+        if file_size < min_model_size:
+            raise ModelLoadError(
+                model_name=metadata.name,
+                reason=f"Model file appears to be a placeholder stub. "
+                       f"File size: {file_size} bytes (expected > 10MB for real models). "
+                       f"Please download real model weights."
             )
-            return self._create_placeholder_session(metadata)
         
         try:
             import onnxruntime as ort
@@ -453,27 +431,168 @@ class ModelManager:
             )
             
             logger.info(f"Successfully loaded real ONNX model: {metadata.name}")
+            
+            # Record metrics with error handling to prevent model load failures
+            try:
+                record_model_load(metadata.name, success=True)
+            except Exception as metric_err:
+                logger.warning(f"Failed to record model load metric: {metric_err}")
+            
+            try:
+                update_vram_usage(metadata.name, metadata.vram_mb * 1024 * 1024)
+            except Exception as metric_err:
+                logger.warning(f"Failed to update VRAM usage metric: {metric_err}")
+            
             return session
             
-        except ImportError:
-            logger.warning("ONNX Runtime not available, using placeholder")
-            return self._create_placeholder_session(metadata)
-            
+        except ImportError as e:
+            record_model_load(metadata.name, success=False)
+            raise ModelLoadError(
+                model_name=metadata.name,
+                reason=f"ONNX Runtime not installed. Install with: pip install onnxruntime-gpu. Error: {e}"
+            )
+        except RuntimeError as e:
+            record_model_load(metadata.name, success=False)
+            raise ModelLoadError(
+                model_name=metadata.name,
+                reason=f"ONNX Runtime error (likely CUDA/cuDNN mismatch): {e}"
+            )
+        except OSError as e:
+            record_model_load(metadata.name, success=False)
+            raise ModelLoadError(
+                model_name=metadata.name,
+                reason=f"Model file corrupted or inaccessible: {e}"
+            )
         except Exception as e:
-            logger.error(f"Failed to load ONNX model {metadata.name}: {e}")
-            logger.warning("Falling back to placeholder session")
-            return self._create_placeholder_session(metadata)
+            record_model_load(metadata.name, success=False)
+            raise ModelLoadError(
+                model_name=metadata.name,
+                reason=f"Unexpected error loading model: {type(e).__name__}: {e}"
+            )
     
-    def _create_placeholder_session(
+    async def _load_pytorch_model(
         self,
         metadata: ModelMetadata
-    ) -> "PlaceholderSession":
+    ) -> Tuple[Any, Any]:
         """
-        Create a placeholder session for development/testing.
+        Load PyTorch model from HuggingFace Hub.
         
-        Returns heuristic-based outputs derived from input statistics.
+        Downloads and loads a PyTorch model (safetensors format) directly
+        using the transformers library for models that don't have ONNX versions.
+        
+        Args:
+            metadata: Model metadata with source repo
+            
+        Returns:
+            Tuple of (model, processor) for inference
         """
-        return PlaceholderSession(metadata)
+        try:
+            import torch
+            from transformers import AutoModelForImageClassification, AutoImageProcessor
+            from huggingface_hub import snapshot_download
+            
+            # Extract repo from download_url (format: "pytorch:repo/name")
+            repo_id = metadata.download_url.replace("pytorch:", "")
+            
+            logger.info(f"Loading PyTorch model from HuggingFace: {repo_id}")
+            
+            # Download model files
+            model_dir = await self._download_pytorch_model(repo_id, metadata)
+            
+            # Load model and processor
+            device = "cuda" if self._use_gpu and torch.cuda.is_available() else "cpu"
+            
+            model = AutoModelForImageClassification.from_pretrained(
+                model_dir,
+                local_files_only=True,
+                trust_remote_code=False
+            )
+            model.to(device)
+            model.eval()
+            
+            processor = AutoImageProcessor.from_pretrained(
+                model_dir,
+                local_files_only=True
+            )
+            
+            logger.info(f"Successfully loaded PyTorch model: {metadata.name} on {device}")
+            
+            # Record metrics
+            try:
+                record_model_load(metadata.name, success=True)
+            except Exception as metric_err:
+                logger.warning(f"Failed to record model load metric: {metric_err}")
+            
+            return (model, processor)
+            
+        except ImportError as e:
+            record_model_load(metadata.name, success=False)
+            raise ModelLoadError(
+                model_name=metadata.name,
+                reason=f"PyTorch/transformers not installed. Install with: pip install torch transformers. Error: {e}"
+            )
+        except Exception as e:
+            record_model_load(metadata.name, success=False)
+            raise ModelLoadError(
+                model_name=metadata.name,
+                reason=f"Failed to load PyTorch model: {type(e).__name__}: {e}"
+            )
+    
+    async def _download_pytorch_model(
+        self,
+        repo_id: str,
+        metadata: ModelMetadata
+    ) -> str:
+        """
+        Download PyTorch model files from HuggingFace Hub.
+        
+        Args:
+            repo_id: HuggingFace repository ID
+            metadata: Model metadata
+            
+        Returns:
+            Path to downloaded model directory
+        """
+        from huggingface_hub import snapshot_download
+        
+        model_dir = os.path.join(self.model_cache_dir, metadata.name)
+        os.makedirs(model_dir, exist_ok=True)
+        
+        # Check if already downloaded
+        if os.path.exists(os.path.join(model_dir, "config.json")):
+            # Check for model files
+            model_files = ["model.safetensors", "pytorch_model.bin"]
+            if any(os.path.exists(os.path.join(model_dir, f)) for f in model_files):
+                logger.info(f"PyTorch model already cached: {model_dir}")
+                return model_dir
+        
+        logger.info(f"Downloading PyTorch model from {repo_id}...")
+        
+        try:
+            # Download model files
+            loop = asyncio.get_event_loop()
+            from concurrent.futures import ThreadPoolExecutor
+            
+            with ThreadPoolExecutor() as executor:
+                downloaded_path = await loop.run_in_executor(
+                    executor,
+                    lambda: snapshot_download(
+                        repo_id=repo_id,
+                        local_dir=model_dir,
+                        # Only download essential files
+                        allow_patterns=["config.json", "model.safetensors", "pytorch_model.bin", 
+                                       "preprocessor_config.json", "*.json"],
+                    )
+                )
+            
+            logger.info(f"Downloaded PyTorch model to: {model_dir}")
+            return model_dir
+            
+        except Exception as e:
+            raise ModelLoadError(
+                model_name=metadata.name,
+                reason=f"Failed to download PyTorch model from HuggingFace: {e}"
+            )
     
     async def _ensure_vram_available(
         self,
@@ -558,6 +677,10 @@ class ModelManager:
             if hasattr(model.session, '_session'):
                 del model.session._session
             del model.session
+            
+            # Record metrics
+            record_model_unload(model_name)
+            update_vram_usage(model_name, 0)
         
         logger.info(f"Unloaded model: {model_name}")
         return True
@@ -574,19 +697,10 @@ class ModelManager:
         """
         if model_names is None:
             # Default critical models based on hardware
-            if self.hardware.accelerator == AcceleratorType.CPU:
-                # CPU mode: load only essential models
-                model_names = [
-                    "efficientnet_b3_spatial",
-                    "siglip_deepfake",
-                ]
-            else:
-                # GPU mode: load more models
-                model_names = [
-                    "efficientnet_b3_spatial",
-                    "retinaface",
-                    "siglip_deepfake",
-                ]
+            model_names = [
+                "deepfake_detector_v3",  # Primary deepfake detection model
+                "retinaface",  # Face detection
+            ]
         
         logger.info(f"Warming up models: {model_names}")
         
@@ -731,136 +845,14 @@ class ModelManager:
     def __del__(self):
         """Cleanup on destruction."""
         try:
-            with self._lock:
-                self._loaded.clear()
-                self._current_vram_mb = 0
+            if self._lock.acquire(blocking=False):
+                try:
+                    self._loaded.clear()
+                    self._current_vram_mb = 0
+                finally:
+                    self._lock.release()
         except Exception:
-            pass
-
-
-class PlaceholderSession:
-    """
-    Placeholder ONNX session for development/testing.
-    
-    Returns heuristic-based outputs derived from input statistics.
-    This provides more meaningful results than random values.
-    """
-    
-    def __init__(self, metadata: ModelMetadata):
-        self.metadata = metadata
-        self._inputs = [
-            type("Input", (), {"name": "input", "shape": metadata.input_shape})()
-        ]
-        self._outputs = [
-            type("Output", (), {
-                "name": "output",
-                "shape": metadata.output_shape or [1, 2]
-            })()
-        ]
-    
-    def run(
-        self,
-        output_names: Optional[List[str]],
-        input_feed: Dict[str, Any],
-        run_options: Any = None
-    ) -> List[Any]:
-        """
-        Run heuristic-based inference using input statistics.
-        
-        Uses image statistics to generate plausible detection scores:
-        - Analyzes variance, edge density, and frequency distribution
-        - Returns consistent scores for similar inputs
-        """
-        import numpy as np
-        
-        batch_size = 1
-        input_data = None
-        for name, value in input_feed.items():
-            if hasattr(value, 'shape'):
-                batch_size = value.shape[0]
-                input_data = value
-                break
-        
-        output_shape = self.metadata.output_shape or [1, 2]
-        output_shape = [batch_size] + output_shape[1:]
-        
-        # Generate heuristic-based output
-        if self.metadata.num_classes > 0 and input_data is not None:
-            # Classification: use input statistics for heuristic score
-            scores = []
-            for i in range(batch_size):
-                sample = input_data[i:i+1]
-                
-                # Compute image statistics for heuristic analysis
-                # Normalize to 0-1 range if needed
-                if sample.max() > 1.0:
-                    sample_norm = sample / 255.0
-                else:
-                    sample_norm = sample
-                
-                # Compute variance (low variance can indicate AI generation)
-                variance = np.var(sample_norm)
-                
-                # Compute edge density using simple gradient
-                if len(sample_norm.shape) >= 3:
-                    gray = np.mean(sample_norm[0], axis=-1)
-                else:
-                    gray = sample_norm[0]
-                
-                # Simple edge detection using gradients
-                grad_x = np.abs(np.diff(gray, axis=1))
-                grad_y = np.abs(np.diff(gray, axis=0))
-                edge_density = (np.mean(grad_x) + np.mean(grad_y)) / 2
-                
-                # Compute high-frequency content
-                if gray.shape[0] > 4 and gray.shape[1] > 4:
-                    high_freq = gray[::2, ::2]  # Downsample
-                    hf_energy = np.var(high_freq)
-                else:
-                    hf_energy = 0.1
-                
-                # Heuristic scoring for deepfake detection
-                # Low variance + low edge density + low HF energy = likely AI-generated
-                # High variance + high edge density = likely real
-                
-                # Normalize metrics
-                var_score = min(variance * 5, 1.0)  # Higher variance = more real
-                edge_score = min(edge_density * 10, 1.0)  # More edges = more real
-                hf_score = min(hf_energy * 5, 1.0)  # More HF = more real
-                
-                # Combine into fake probability (inverse of real indicators)
-                fake_prob = 1.0 - (var_score * 0.3 + edge_score * 0.4 + hf_score * 0.3)
-                
-                # Add some noise based on input hash for consistency
-                input_hash = hash(sample.tobytes()) % 1000 / 10000.0
-                fake_prob = np.clip(fake_prob + input_hash - 0.05, 0.1, 0.9)
-                
-                # Create probability distribution [real, fake]
-                real_prob = 1.0 - fake_prob
-                scores.append([real_prob, fake_prob])
-            
-            output = np.array(scores, dtype=np.float32)
-        else:
-            # Feature extraction: return deterministic features based on input
-            if input_data is not None:
-                # Use input statistics as features
-                features = []
-                for i in range(batch_size):
-                    sample = input_data[i:i+1]
-                    # Create deterministic features from input
-                    feat = np.random.RandomState(hash(sample.tobytes()) % (2**31)).randn(*output_shape[1:]).astype(np.float32)
-                    features.append(feat)
-                output = np.array(features, dtype=np.float32)
-            else:
-                output = np.zeros(output_shape, dtype=np.float32)
-        
-        return [output]
-    
-    def get_inputs(self):
-        return self._inputs
-    
-    def get_outputs(self):
-        return self._outputs
+            logger.exception("ModelManager.__del__ cleanup failed")
 
 
 # Singleton instance

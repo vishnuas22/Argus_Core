@@ -384,9 +384,21 @@ export function XAIEvidenceGallery({
                   onClick={() => setSelectedIndex(index)}
                   data-testid={`evidence-item-${index}`}
                 >
-                  {/* Image placeholder - would use actual image in production */}
-                  <div className="absolute inset-0 bg-muted flex items-center justify-center">
-                    <ItemIcon className="h-8 w-8 text-muted-foreground" />
+                  {/* Heatmap/evidence image */}
+                  <div className="absolute inset-0 bg-muted">
+                    <img
+                      src={item.url}
+                      alt={item.description}
+                      className="w-full h-full object-cover"
+                      loading="lazy"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                        (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
+                      }}
+                    />
+                    <div className="absolute inset-0 flex items-center justify-center hidden">
+                      <ItemIcon className="h-8 w-8 text-muted-foreground" />
+                    </div>
                   </div>
                   
                   {/* Type badge */}
@@ -432,7 +444,16 @@ export function XAIEvidenceGallery({
                   data-testid={`evidence-list-item-${index}`}
                 >
                   {/* Thumbnail */}
-                  <div className="w-16 h-16 rounded bg-muted flex items-center justify-center flex-shrink-0">
+                  <div className="w-16 h-16 rounded bg-muted flex items-center justify-center flex-shrink-0 overflow-hidden">
+                    <img
+                      src={item.url}
+                      alt={item.description}
+                      className="w-full h-full object-cover"
+                      loading="lazy"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                      }}
+                    />
                     <ItemIcon className="h-6 w-6 text-muted-foreground" />
                   </div>
 
@@ -537,9 +558,17 @@ export function XAIEvidenceGallery({
                         {selectedEvidence.description}
                       </DialogDescription>
                     </DialogHeader>
-                    <div className="aspect-video bg-muted rounded-lg flex items-center justify-center">
-                      {/* Full size image would be displayed here */}
-                      <EvidenceIcon className="h-16 w-16 text-muted-foreground" />
+                    <div className="aspect-video bg-muted rounded-lg flex items-center justify-center overflow-hidden">
+                      <img
+                        src={selectedEvidence.url}
+                        alt={selectedEvidence.description}
+                        className="w-full h-full object-contain"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                          (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
+                        }}
+                      />
+                      <EvidenceIcon className="h-16 w-16 text-muted-foreground hidden" />
                     </div>
                     <div className="flex justify-between">
                       <Button variant="outline" onClick={handlePrevious}>

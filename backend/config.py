@@ -62,8 +62,6 @@ class Settings(BaseSettings):
     score_weight_video_temporal: float = 0.25
     score_weight_audio: float = 0.20
     score_weight_metadata: float = 0.15
-    score_weight_text: float = 0.10
-    
     verdict_threshold_authentic: int = 80
     verdict_threshold_likely_authentic: int = 60
     verdict_threshold_uncertain: int = 40
@@ -76,7 +74,7 @@ class Settings(BaseSettings):
     api_rate_limit_per_minute: int = 100
     
     # ============== CORS ==============
-    cors_origins: str = "*"
+    cors_origins: str = "http://localhost:3000"
     
     # ============== LOGGING ==============
     log_level: str = "INFO"
@@ -86,7 +84,7 @@ class Settings(BaseSettings):
     api_version: str = "v1"
     api_title: str = "Argus Core API"
     api_description: str = "Multi-Modal Deepfake Detection & Forensic Analysis Platform"
-    
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -36,6 +36,18 @@ import type {
 // ============== TYPES ==============
 
 /**
+ * Normalize confidence_interval from backend dict format to frontend array format
+ */
+function normalizeConfidenceInterval(ci: unknown): [number, number] | null {
+  if (!ci) return null;
+  if (Array.isArray(ci) && ci.length === 2) return [ci[0], ci[1]];
+  if (typeof ci === 'object' && ci !== null && 'lower' in ci && 'upper' in ci) {
+    return [Number((ci as Record<string, unknown>).lower), Number((ci as Record<string, unknown>).upper)];
+  }
+  return null;
+}
+
+/**
  * Return type for useXAI hook
  */
 export interface UseXAIReturn {
@@ -196,10 +208,10 @@ export function useXAI(
             xaiResponse.image_xai = {
               explanation: {
                 feature_importance: imageFeatures,
-                visual_evidence: detail.evidence_package?.visual_evidence?.filter(e => e.artifact_type === 'heatmap') || [],
+                visual_evidence: detail.evidence_package?.visual_evidence || [],
                 scientific_references: detail.scientific_references,
                 reproducibility_hash: detail.evidence_package?.reproducibility_hash || '',
-                confidence_interval: detail.image_result.confidence_interval || detail.evidence_package?.confidence_interval || [0.25, 0.75],
+                confidence_interval: normalizeConfidenceInterval(detail.image_result.confidence_interval) || normalizeConfidenceInterval(detail.evidence_package?.confidence_interval) || [0.25, 0.75],
                 model_versions: detail.evidence_package?.model_versions || {},
               },
               manipulation_regions: detail.image_result.manipulation_regions || [],
@@ -219,7 +231,7 @@ export function useXAI(
                 visual_evidence: detail.evidence_package?.visual_evidence || [],
                 scientific_references: detail.scientific_references,
                 reproducibility_hash: detail.evidence_package?.reproducibility_hash || '',
-                confidence_interval: detail.evidence_package?.confidence_interval || [0.25, 0.75],
+                confidence_interval: normalizeConfidenceInterval(detail.evidence_package?.confidence_interval) || [0.25, 0.75],
                 model_versions: detail.evidence_package?.model_versions || {},
               },
               manipulation_regions: detail.video_result.spatial?.manipulation_regions || [],
@@ -235,14 +247,6 @@ export function useXAI(
             explanation: detail.audio_result.xai_explanation,
             artifact_regions: detail.audio_result.artifact_regions || [],
             spectrogram_overlay_url: null,
-          };
-        }
-
-        // Check for text XAI data
-        if (detail.text_result?.xai_explanation) {
-          xaiResponse.text_xai = {
-            explanation: detail.text_result.xai_explanation,
-            token_attributions: detail.text_result.token_attributions || [],
           };
         }
 

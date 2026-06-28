@@ -54,14 +54,30 @@ if [ "${AUTO_DOWNLOAD_MODELS}" = "true" ] && [ "${DOWNLOAD_ON_STARTUP}" = "true"
     # Download image models (essential for deepfake detection)
     echo ""
     echo "Downloading Image models..."
-    python -m models.model_downloader --model efficientnet_b3_spatial --models-dir ${MODEL_PATH:-/models} --force || true
-    python -m models.model_downloader --model siglip_deepfake --models-dir ${MODEL_PATH:-/models} --force || true
-    
-    # Download text models
+    # Download ONNX deepfake detector for image analysis
     echo ""
-    echo "Downloading Text models..."
-    python -m models.model_downloader --model gpt2_perplexity --models-dir ${MODEL_PATH:-/models} || true
-    python -m models.model_downloader --model modernbert_ai_detector --models-dir ${MODEL_PATH:-/models} || true
+    echo "Downloading ONNX deepfake detector..."
+    python -c "
+from huggingface_hub import hf_hub_download
+import shutil, os
+model_path = '${MODEL_PATH:-/models}'
+onnx_target = os.path.join(model_path, 'deepfake_detector_v3.onnx')
+if not os.path.exists(onnx_target):
+    try:
+        downloaded = hf_hub_download(
+            repo_id='onnx-community/Deep-Fake-Detector-v2-Model-ONNX',
+            filename='onnx/model.onnx',
+            cache_dir=os.path.join(model_path, 'hf_cache')
+        )
+        shutil.copy(downloaded, onnx_target)
+        size_mb = os.path.getsize(onnx_target) / 1024 / 1024
+        print(f'Downloaded deepfake_detector_v3.onnx ({size_mb:.1f}MB)')
+    except Exception as e:
+        print(f'Warning: Could not download deepfake_detector_v3.onnx: {e}')
+else:
+    size_mb = os.path.getsize(onnx_target) / 1024 / 1024
+    print(f'deepfake_detector_v3.onnx already exists ({size_mb:.1f}MB)')
+" || echo "  - ONNX deepfake detector download skipped"
     
     # Download audio models
     echo ""
@@ -126,15 +142,27 @@ try:
     print(f'Found {len(models)} registered models')
     
     # Preload essential models
-    essential = ['efficientnet_b3_spatial', 'siglip_deepfake', 'clip_vit_b16']
+    essential = ['deepfake_detector_v3', 'retinaface', 'clip_vit_b16']
     loaded = 0
     for model_name in essential:
         try:
-            info = registry.get_model_info(model_name)
-            if info and manager.is_model_available(model_name):
-                print(f'  Preloading: {model_name}')
-                manager.get_session(model_name)
-                loaded += 1
+            if model_name == 'deepfake_detector_v3':
+                # ONNX model - check file exists
+                import os
+                onnx_path = os.path.join('${MODEL_PATH:-/models}', 'deepfake_detector_v3.onnx')
+                if os.path.exists(onnx_path):
+                    import onnxruntime as ort
+                    sess = ort.InferenceSession(onnx_path, providers=['CPUExecutionProvider'])
+                    print(f'  Preloaded: {model_name} (ONNX)')
+                    loaded += 1
+                else:
+                    print(f'  Skip {model_name}: file not found')
+            else:
+                info = registry.get_model_info(model_name)
+                if info and manager.is_model_available(model_name):
+                    print(f'  Preloading: {model_name}')
+                    manager.get_session(model_name)
+                    loaded += 1
         except Exception as e:
             print(f'  Skip {model_name}: {str(e)[:50]}')
     

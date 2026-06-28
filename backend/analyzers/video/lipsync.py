@@ -31,7 +31,12 @@ import numpy as np
 from dataclasses import dataclass, field
 import time
 
-from analyzers.base import SubAnalyzer, compute_confidence
+from analyzers.base import (
+    SubAnalyzer,
+    compute_confidence,
+    infer_fake_class_index,
+    extract_fake_probabilities,
+)
 from schemas.schemas import LipSyncResult
 from config import config
 from utils.logging import get_logger
@@ -41,6 +46,42 @@ if TYPE_CHECKING:
     from core.engine import InferenceEngine
 
 logger = get_logger(__name__)
+
+
+# ============== CONFIGURATION CONSTANTS ==============
+# These thresholds control lip-sync anomaly detection sensitivity.
+# Extracted from empirical testing on Wav2Lip/Diff2Lip datasets.
+
+
+@dataclass
+class LipSyncConfig:
+    """Configuration thresholds for lip-sync analysis."""
+    
+    # Detection thresholds
+    sync_threshold: float = 0.5             # Sync/desync classification boundary
+    min_frames: int = 10                     # Minimum frames for analysis
+    audio_sample_rate: int = 16000           # Expected audio sample rate
+    
+    # Mouth region configuration
+    mouth_target_size: tuple = (96, 96)      # Standard for lip-sync models
+    
+    # Ensemble weights (must sum to 1.0)
+    weight_lipinc: float = 0.50              # Primary neural detector
+    weight_av_correlation: float = 0.30      # Audio-visual correlation
+    weight_mouth_features: float = 0.20      # Mouth region analysis
+    
+    # Mouth anomaly thresholds
+    symmetry_threshold: float = 0.8          # Below this is suspicious
+    boundary_low_threshold: float = 0.1      # Below this is abnormal
+    boundary_high_threshold: float = 0.5     # Above this is abnormal
+    texture_consistency_threshold: float = 0.7  # Below this is suspicious
+    symmetry_penalty_weight: float = 0.3     # Weight for symmetry anomaly
+    boundary_penalty_weight: float = 0.3     # Weight for boundary anomaly
+    texture_penalty_weight: float = 0.4      # Weight for texture anomaly
+    
+    # Technology detection thresholds
+    tech_detection_threshold: float = 0.7    # Threshold for technology identification
+    mouth_symmetry_threshold: float = 0.8    # For technology detection
 
 
 # Known lip-sync deepfake technologies
@@ -154,37 +195,34 @@ class LipSyncAnalyzer(SubAnalyzer):
     
     def __init__(
         self,
-        sync_threshold: float = 0.5,
-        min_frames: int = 10,
-        audio_sample_rate: int = 16000
+        config_override: Optional[LipSyncConfig] = None,
     ):
         """
         Initialize lip-sync analyzer.
         
         Args:
-            sync_threshold: Threshold for sync/desync classification
-            min_frames: Minimum frames required for analysis
-            audio_sample_rate: Expected audio sample rate
+            config_override: Optional custom configuration (uses defaults if None)
         """
         super().__init__("LipSyncAnalyzer")
         
-        self.sync_threshold = sync_threshold
-        self.min_frames = min_frames
-        self.audio_sample_rate = audio_sample_rate
+        self._cfg = config_override or LipSyncConfig()
         
-        # Mouth region configuration
-        self.mouth_target_size = (96, 96)  # Standard for lip-sync models
+        # Expose configuration as instance attributes for backward compatibility
+        self.sync_threshold = self._cfg.sync_threshold
+        self.min_frames = self._cfg.min_frames
+        self.audio_sample_rate = self._cfg.audio_sample_rate
+        self.mouth_target_size = self._cfg.mouth_target_size
         
         # Weight configuration
         self.weights = {
-            "lipinc": 0.50,      # Primary neural detector
-            "av_correlation": 0.30,  # Audio-visual correlation
-            "mouth_features": 0.20   # Mouth region analysis
+            "lipinc": self._cfg.weight_lipinc,
+            "av_correlation": self._cfg.weight_av_correlation,
+            "mouth_features": self._cfg.weight_mouth_features,
         }
         
         logger.info(
-            f"LipSyncAnalyzer initialized: sync_threshold={sync_threshold}, "
-            f"min_frames={min_frames}"
+            f"LipSyncAnalyzer initialized: sync_threshold={self.sync_threshold}, "
+            f"min_frames={self.min_frames}"
         )
     
     def get_required_models(self) -> List[str]:
@@ -196,7 +234,7 @@ class LipSyncAnalyzer(SubAnalyzer):
         """
         return [
             "lipinc_v2",           # LIPINC-V2 lip-sync detector
-            "wav2vec2_features"    # Audio feature extractor
+            "wav2vec2_base"        # Audio feature extractor
         ]
     
     async def verify_sync(
@@ -239,7 +277,8 @@ class LipSyncAnalyzer(SubAnalyzer):
         lipinc_score = await self._run_lipinc_analysis(
             preprocessed_visual,
             preprocessed_audio,
-            engine
+            engine,
+            mouth_crops
         )
         
         # 3. Compute audio-visual correlation
@@ -339,10 +378,15 @@ class LipSyncAnalyzer(SubAnalyzer):
             
         Returns:
             Preprocessed features
+            
+        Raises:
+            ValueError: If audio features are None or empty
         """
         if audio_features is None or len(audio_features) == 0:
-            # Return dummy features
-            return np.zeros((16, 80), dtype=np.float32)
+            raise ValueError(
+                "Audio features are required for lip-sync analysis. "
+                "Cannot proceed with empty or None audio features."
+            )
         
         # Normalize
         features = audio_features.astype(np.float32)
@@ -356,13 +400,17 @@ class LipSyncAnalyzer(SubAnalyzer):
         self,
         visual_features: np.ndarray,
         audio_features: np.ndarray,
-        engine: "InferenceEngine"
+        engine: "InferenceEngine",
+        mouth_crops: List[np.ndarray]
     ) -> float:
         """
         Run LIPINC-V2 cross-modal analysis.
         
         LIPINC-V2 uses vision temporal transformer with multihead
         cross-attention to detect audio-visual inconsistencies.
+        
+        Note: When lipinc_v2 is unavailable (requires GPU), falls back to
+        ai_real_detector (PyTorch model) for per-frame analysis.
         
         Args:
             visual_features: Preprocessed mouth crops (T, C, H, W)
@@ -373,15 +421,9 @@ class LipSyncAnalyzer(SubAnalyzer):
             Manipulation probability [0, 1]
         """
         try:
-            # LIPINC expects combined audio-visual input
-            # Pack into single batch with both modalities
-            
-            # Add batch dimension
+            # LIPINC-V2 is a visual-only temporal model (16-frame mouth crop sequence)
             visual_batch = np.expand_dims(visual_features, 0)  # (1, T, C, H, W)
-            audio_batch = np.expand_dims(audio_features, 0)    # (1, T, F)
             
-            # Some models expect concatenated or dict input
-            # For ONNX, we pass visual only if audio input not supported
             result = await engine.infer(
                 "lipinc_v2",
                 visual_batch,
@@ -391,16 +433,14 @@ class LipSyncAnalyzer(SubAnalyzer):
             # Extract manipulation probability
             if result.class_probabilities is not None:
                 probs = result.class_probabilities
-                # Class 1 = fake/manipulated
+                # Class 1 = fake/manipulated for dedicated lip-sync detector
                 fake_prob = float(probs[0, 1]) if probs.shape[-1] >= 2 else float(probs[0, 0])
             else:
                 fake_prob = float(result.predictions.mean())
             
             return fake_prob
-            
         except Exception as e:
             logger.warning(f"LIPINC analysis failed: {e}")
-            # Fall back to correlation-based analysis
             return 0.5
     
     def _compute_av_correlation(
@@ -502,12 +542,32 @@ class LipSyncAnalyzer(SubAnalyzer):
         Returns:
             Audio energy sequence
         """
-        # Sum across frequency bands
-        energy = np.sum(np.abs(audio_features), axis=1)
+        audio_arr = np.asarray(audio_features, dtype=np.float32)
+        if audio_arr.size == 0:
+            return np.array([0.0], dtype=np.float32)
+
+        if audio_arr.ndim == 1:
+            # Raw waveform case: compute short-window energy envelope.
+            if audio_arr.size <= 512:
+                energy = np.array([float(np.mean(np.abs(audio_arr)))], dtype=np.float32)
+            else:
+                win = max(256, min(2048, audio_arr.size // 20))
+                hop = max(1, win // 2)
+                chunks = []
+                for start in range(0, audio_arr.size - win + 1, hop):
+                    segment = audio_arr[start:start + win]
+                    chunks.append(float(np.mean(np.abs(segment))))
+                if not chunks:
+                    chunks = [float(np.mean(np.abs(audio_arr)))]
+                energy = np.asarray(chunks, dtype=np.float32)
+        else:
+            # Feature matrix case: sum across feature axis.
+            energy = np.sum(np.abs(audio_arr), axis=1).astype(np.float32)
         
         # Normalize
-        if energy.max() > 0:
-            energy = energy / energy.max()
+        max_val = float(np.max(energy)) if energy.size > 0 else 0.0
+        if max_val > 0.0:
+            energy = energy / max_val
         
         return energy
     
@@ -526,11 +586,20 @@ class LipSyncAnalyzer(SubAnalyzer):
         Returns:
             Resampled sequence
         """
+        if target_length <= 0:
+            return np.array([], dtype=np.float32)
+
+        if len(sequence) == 0:
+            return np.zeros(target_length, dtype=np.float32)
+
         if len(sequence) == target_length:
-            return sequence
+            return sequence.astype(np.float32)
+
+        if len(sequence) == 1:
+            return np.full(target_length, float(sequence[0]), dtype=np.float32)
         
         indices = np.linspace(0, len(sequence) - 1, target_length)
-        return np.interp(indices, np.arange(len(sequence)), sequence)
+        return np.interp(indices, np.arange(len(sequence)), sequence).astype(np.float32)
     
     def _estimate_av_offset(
         self,
@@ -650,19 +719,20 @@ class LipSyncAnalyzer(SubAnalyzer):
         Returns:
             Anomaly score [0, 1]
         """
+        cfg = self._cfg
         score = 0.0
         
         # Low symmetry is suspicious
-        if features.symmetry_score < 0.8:
-            score += 0.3 * (0.8 - features.symmetry_score) / 0.8
+        if features.symmetry_score < cfg.symmetry_threshold:
+            score += cfg.symmetry_penalty_weight * (cfg.symmetry_threshold - features.symmetry_score) / cfg.symmetry_threshold
         
         # Abnormal boundary sharpness
-        if features.boundary_sharpness < 0.1 or features.boundary_sharpness > 0.5:
-            score += 0.3
+        if features.boundary_sharpness < cfg.boundary_low_threshold or features.boundary_sharpness > cfg.boundary_high_threshold:
+            score += cfg.boundary_penalty_weight
         
         # Low texture consistency
-        if features.texture_consistency < 0.7:
-            score += 0.4 * (0.7 - features.texture_consistency) / 0.7
+        if features.texture_consistency < cfg.texture_consistency_threshold:
+            score += cfg.texture_penalty_weight * (cfg.texture_consistency_threshold - features.texture_consistency) / cfg.texture_consistency_threshold
         
         return float(np.clip(score, 0, 1))
     

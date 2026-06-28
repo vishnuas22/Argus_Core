@@ -39,7 +39,6 @@ class ModelCategory(str, Enum):
     TEMPORAL = "temporal"         # Temporal consistency
     LIPSYNC = "lipsync"           # Lip-sync verification
     AUDIO = "audio"               # Audio deepfake detection
-    TEXT = "text"                 # AI text detection
     IMAGE = "image"               # Image manipulation detection
     FACE_DETECTION = "face_detection"  # Face detection preprocessing
     FEATURE = "feature"           # Feature extraction (CLIP, etc.)
@@ -153,28 +152,7 @@ class ModelMetadata:
 # Default model registry with SOTA models for deepfake detection
 # Input shapes match the actual ONNX model files in /models/
 DEFAULT_MODELS: Dict[str, ModelMetadata] = {
-    # ============== SPATIAL ANALYSIS ==============
-    # Deepfake detection model from prithivMLmods/Deepfake-Detection-Exp-02-22-ONNX
-    "efficientnet_b3_spatial": ModelMetadata(
-        name="efficientnet_b3_spatial",
-        path="/models/efficientnet_b3_spatial.onnx",
-        input_shape=[1, 3, 224, 224],  # pixel_values: [N, C, H, W]
-        output_shape=[1, 2],  # logits: [N, 2] - binary classification
-        vram_mb=400,
-        version="1.0.0",
-        quantization=QuantizationType.NONE,
-        category=ModelCategory.SPATIAL,
-        description="Deepfake detection model - binary classifier (real vs fake)",
-        optimal_batch_size=16,
-        max_batch_size=64,
-        num_classes=2,
-        class_labels=["real", "fake"],
-        source="prithivMLmods/Deepfake-Detection-Exp-02-22-ONNX",
-        download_url="https://huggingface.co/prithivMLmods/Deepfake-Detection-Exp-02-22-ONNX/resolve/main/deepfake_detector.onnx",
-        license="Apache-2.0",
-        academic_reference="https://arxiv.org/abs/1905.04225"
-    ),
-    
+    # ============== FEATURE EXTRACTION ==============
     "clip_vit_b16": ModelMetadata(
         name="clip_vit_b16",
         path="/models/clip_vit_b16.onnx",
@@ -184,7 +162,7 @@ DEFAULT_MODELS: Dict[str, ModelMetadata] = {
         version="1.0.0",
         quantization=QuantizationType.NONE,
         category=ModelCategory.FEATURE,
-        description="MobileNetV2-based feature extractor for visual analysis",
+        description="CLIP ViT-B/16 feature extractor for visual embedding and anomaly scoring",
         optimal_batch_size=8,
         max_batch_size=32,
         num_classes=0,  # Feature extractor, not classifier
@@ -195,24 +173,45 @@ DEFAULT_MODELS: Dict[str, ModelMetadata] = {
     ),
     
     # ============== TEMPORAL ANALYSIS ==============
+    # X-CLIP Temporal Transformer (KDD 2025)
     "xclip_temporal": ModelMetadata(
         name="xclip_temporal",
         path="/models/xclip_temporal_int8.onnx",
-        input_shape=[1, 16, 3, 224, 224],  # Actual: input: [1, 16, 3, 224, 224]
+        input_shape=[1, 16, 3, 224, 224],  # (B, T, C, H, W)
         output_shape=[1, 2],
-        vram_mb=600,
+        vram_mb=450,
         version="1.0.0",
         quantization=QuantizationType.INT8,
-        category=ModelCategory.TEMPORAL,
-        description="X-CLIP transformer for temporal consistency analysis",
+        category=ModelCategory.VIDEO,
+        description="Cross-frame temporal consistency analysis. Detects flickering, irregular motion, and inter-frame artifacts.",
         optimal_batch_size=2,
-        max_batch_size=4,
-        supports_dynamic_batch=False,
-        class_labels=["consistent", "inconsistent"],
+        max_batch_size=8,
+        num_classes=2,
+        class_labels=["real", "fake"],
         source="microsoft/xclip-base-patch16",
         download_url="https://huggingface.co/microsoft/xclip-base-patch16/resolve/main/onnx/model.onnx",
+        license="MIT"
+    ),
+
+    # VideoMAE - SOTA Temporal Video Analyzer
+    "videomae_temporal": ModelMetadata(
+        name="videomae_temporal",
+        path="/models/videomae_base.onnx",
+        input_shape=[1, 16, 3, 224, 224],
+        output_shape=[1, 2],
+        vram_mb=650,
+        version="1.0.0",
+        quantization=QuantizationType.INT8,
+        category=ModelCategory.VIDEO,
+        description="VideoMAE: Masked Autoencoders are Data-Efficient Learners for Self-Supervised Video Pre-Training",
+        optimal_batch_size=2,
+        max_batch_size=4,
+        num_classes=2,
+        class_labels=["real", "fake"],
+        source="MCG-NJU/videomae-base",
+        download_url="pytorch:MCG-NJU/videomae-base",
         license="MIT",
-        academic_reference="https://arxiv.org/abs/2207.07285"
+        academic_reference="https://arxiv.org/abs/2203.12602"
     ),
     
     # ============== LIP-SYNC DETECTION ==============
@@ -236,24 +235,25 @@ DEFAULT_MODELS: Dict[str, ModelMetadata] = {
     ),
     
     # ============== AUDIO ANALYSIS ==============
-    # AASIST - Use Purdue-M2 as primary (real weights 51MB)
+    # AASIST - ASVspoof 2021 Winner
     "aasist_antispoof": ModelMetadata(
         name="aasist_antispoof",
-        path="/models/purdue_m2.onnx",  # Use Purdue-M2 (real weights)
-        input_shape=[1, 224, 224, 3],  # Spectrogram input
+        path="/models/aasist.onnx",  # Actual AASIST model
+        input_shape=[1, 64600],  # Raw audio waveform input (not spectrogram)
         output_shape=[1, 2],
-        vram_mb=250,
+        vram_mb=300,
         version="1.0.0",
         quantization=QuantizationType.NONE,
         category=ModelCategory.AUDIO,
-        description="Audio deepfake detection using spectrogram analysis. Purdue-M2 architecture with real weights.",
-        optimal_batch_size=16,
-        max_batch_size=64,
+        description="AASIST: Anti-spoofing with Attention and Self-supervised Learning. ASVspoof 2021 winner.",
+        optimal_batch_size=8,
+        max_batch_size=32,
         num_classes=2,
         class_labels=["bonafide", "spoof"],
-        source="legacy/purdue-m2",
+        source="clovaai/aasist",
+        download_url="https://github.com/clovaai/aasist",
         license="MIT",
-        academic_reference="https://arxiv.org/abs/2006.08818"
+        academic_reference="https://arxiv.org/abs/2110.01200"
     ),
     
     # Legacy Purdue-M2 model (kept for backward compatibility)
@@ -293,85 +293,68 @@ DEFAULT_MODELS: Dict[str, ModelMetadata] = {
         academic_reference="https://arxiv.org/abs/2006.11477"
     ),
     
-    # ============== TEXT ANALYSIS ==============
-    # ModernBERT AI Detector - Primary AI text detection model (599MB real weights)
-    "roberta_ai_detector": ModelMetadata(
-        name="roberta_ai_detector",
-        path="/models/modernbert_ai_detector.onnx",  # Use ModernBERT (real weights)
-        input_shape=[1, 512],  # Token IDs
-        output_shape=[1, 2],
-        vram_mb=600,
-        version="1.0.0",
-        quantization=QuantizationType.NONE,
-        category=ModelCategory.TEXT,
-        description="ModernBERT-base fine-tuned for AI-generated text detection. State-of-the-art transformer for text classification.",
-        optimal_batch_size=8,
-        max_batch_size=32,
-        num_classes=2,
-        class_labels=["human", "ai_generated"],
-        source="answerdotai/ModernBERT-base",
-        license="Apache-2.0",
-        academic_reference="https://arxiv.org/abs/2412.13663"
-    ),
-    
-    "radar_text": ModelMetadata(
-        name="radar_text",
-        path="/models/gpt2_perplexity.onnx",  # Use GPT-2 as fallback for text detection
-        input_shape=[1, 512],  # Token IDs with attention mask
-        output_shape=[1, 2],
-        vram_mb=500,
-        version="1.0.0",
-        quantization=QuantizationType.NONE,
-        category=ModelCategory.TEXT,
-        description="GPT-2 based AI text detection using perplexity analysis",
-        optimal_batch_size=8,
-        max_batch_size=32,
-        class_labels=["human", "ai_generated"],
-        source="openai-community/gpt2",
-        license="MIT"
-    ),
-    
-    "gpt2_perplexity": ModelMetadata(
-        name="gpt2_perplexity",
-        path="/models/gpt2_perplexity.onnx",  # Use real GPT-2 model (653MB)
-        input_shape=[1, 512],  # Actual: input: [1, 512]
-        output_shape=[1, 50257],  # Vocabulary logits
-        vram_mb=650,
-        version="1.0.0",
-        quantization=QuantizationType.NONE,
-        category=ModelCategory.TEXT,
-        description="GPT-2 for perplexity-based AI text detection. Full model with real weights.",
-        optimal_batch_size=4,
-        max_batch_size=16,
-        num_classes=0,  # Language model, not classifier
-        source="openai-community/gpt2",
-        download_url="https://huggingface.co/openai-community/gpt2/resolve/main/onnx/model.onnx",
-        license="MIT",
-        academic_reference="https://arxiv.org/abs/1905.04225"
-    ),
-    
-    # ============== IMAGE ANALYSIS ==============
-    # AI vs Deepfake vs Real model from prithivMLmods/AI-vs-Deepfake-vs-Real-ONNX
-    "siglip_deepfake": ModelMetadata(
-        name="siglip_deepfake",
-        path="/models/siglip_deepfake.onnx",
-        input_shape=[1, 3, 224, 224],  # pixel_values: [N, C, H, W]
-        output_shape=[1, 3],  # logits: [N, 3] - 3-class classification
-        vram_mb=400,
+    # ============== FACE DETECTION ==============
+    # ============== CLIP / FOUNDATION MODEL ADAPTER ==============
+    "clip_vit_l14": ModelMetadata(
+        name="clip_vit_l14",
+        path="/models/clip_vit_l14.onnx",
+        input_shape=[1, 3, 224, 224],
+        output_shape=[1, 768],
+        vram_mb=1200,
         version="1.0.0",
         quantization=QuantizationType.NONE,
         category=ModelCategory.IMAGE,
-        description="AI vs Deepfake vs Real image classifier - 3-class classification",
-        optimal_batch_size=8,
-        max_batch_size=32,
-        num_classes=3,
-        class_labels=["real", "deepfake", "ai_generated"],
-        source="prithivMLmods/AI-vs-Deepfake-vs-Real-ONNX",
-        download_url="https://huggingface.co/prithivMLmods/AI-vs-Deepfake-vs-Real-ONNX/resolve/main/ai_vs_deepfake_vs_real.onnx",
-        license="Apache-2.0",
-        academic_reference="https://arxiv.org/abs/2301.02127"
+        description="CLIP ViT-L/14 foundation model adapter (ForensicsAdapter-style) for deepfake image detection",
+        optimal_batch_size=4,
+        max_batch_size=8,
+        num_classes=2,
+        class_labels=["real", "fake"],
+        source="openai/clip-vit-large-patch14",
+        download_url="https://huggingface.co/openai/clip-vit-large-patch14",
+        license="MIT",
+        academic_reference="https://arxiv.org/abs/2103.00020"
     ),
-    
+    "dinov2_vit_b14": ModelMetadata(
+        name="dinov2_vit_b14",
+        path="/models/dinov2_vit_b14.onnx",
+        input_shape=[1, 3, 224, 224],
+        output_shape=[1, 768],
+        vram_mb=700,
+        version="1.0.0",
+        quantization=QuantizationType.NONE,
+        category=ModelCategory.IMAGE,
+        description="DINOv2-B/14 foundation model (NTIRE 2026 winner backbone) for deepfake detection",
+        optimal_batch_size=4,
+        max_batch_size=8,
+        num_classes=2,
+        class_labels=["real", "fake"],
+        source="facebook/dinov2-base",
+        download_url="https://huggingface.co/facebook/dinov2-base",
+        license="Apache-2.0",
+        academic_reference="https://arxiv.org/abs/2304.07193"
+    ),
+
+    # ============== WAV2VEC2 XLSR ANTISPOOFING ==============
+    "wav2vec2_antispoof": ModelMetadata(
+        name="wav2vec2_antispoof",
+        path="/models/wav2vec2_antispoof.onnx",
+        input_shape=[1, 64600],
+        output_shape=[1, 2],
+        vram_mb=340,
+        version="2.0.0",
+        quantization=QuantizationType.INT8,
+        category=ModelCategory.AUDIO,
+        description="Wav2Vec2 Large XLSR fine-tuned on ASVspoof2019 for audio deepfake detection (4.01% EER). INT8 ONNX.",
+        optimal_batch_size=4,
+        max_batch_size=8,
+        num_classes=2,
+        class_labels=["bonafide", "spoof"],
+        source="pranjal-pravesh/wav2vec2-large-xlsr-deepfake-audio-classification",
+        download_url="https://huggingface.co/pranjal-pravesh/wav2vec2-large-xlsr-deepfake-audio-classification",
+        license="Apache-2.0",
+        academic_reference="https://arxiv.org/abs/2006.11477"
+    ),
+
     # ============== FACE DETECTION ==============
     "retinaface": ModelMetadata(
         name="retinaface",
@@ -390,6 +373,27 @@ DEFAULT_MODELS: Dict[str, ModelMetadata] = {
         download_url="https://github.com/biubug6/Pytorch_RetinaFace/releases/download/v1.0/RetinaFace.onnx",
         license="MIT",
         academic_reference="https://arxiv.org/abs/1905.00641"
+    ),
+
+    # ============== DEEPFAKE IMAGE DETECTION ==============
+    "deepfake_detector_v3": ModelMetadata(
+        name="deepfake_detector_v3",
+        path="/models/deepfake_detector_v3.onnx",
+        input_shape=[1, 3, 224, 224],
+        output_shape=[1, 2],
+        vram_mb=420,
+        version="2.0.0",
+        quantization=QuantizationType.NONE,
+        category=ModelCategory.IMAGE,
+        description="Primary deepfake image detection model (ViT-based, fine-tuned for face manipulation detection)",
+        optimal_batch_size=4,
+        max_batch_size=16,
+        num_classes=2,
+        class_labels=["authentic", "manipulated"],
+        source="onnx-community/Deep-Fake-Detector-v2-Model-ONNX",
+        download_url="https://huggingface.co/onnx-community/Deep-Fake-Detector-v2-Model-ONNX",
+        license="MIT",
+        academic_reference="https://huggingface.co/onnx-community/Deep-Fake-Detector-v2-Model-ONNX"
     ),
 }
 

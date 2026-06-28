@@ -17,11 +17,10 @@ import uuid
 # ============== ENUMS ==============
 
 class Modality(str, Enum):
-    """Supported media modalities for analysis."""
+    """Supported media modalities for deepfake analysis."""
     VIDEO = "video"
     AUDIO = "audio"
     IMAGE = "image"
-    TEXT = "text"
 
 
 class AnalysisStatus(str, Enum):
@@ -58,7 +57,6 @@ class ContentType(str, Enum):
     VIDEO_NO_SPEECH = "video_no_speech"
     AUDIO_ONLY = "audio_only"
     IMAGE_ONLY = "image_only"
-    TEXT_ONLY = "text_only"
 
 
 # ============== BASE MODELS ==============
@@ -126,38 +124,6 @@ class AudioArtifactRegion(BaseSchema):
     freq_high: float = Field(..., ge=0, description="High frequency bound in Hz")
     artifact_type: str = Field(..., description="Type: 'vocoder', 'spectral_gap', 'harmonic_inconsistency'")
     confidence: float = Field(..., ge=0, le=1, description="Detection confidence")
-
-
-class TokenAttribution(BaseSchema):
-    """
-    Token-level attribution for text analysis.
-    
-    Shows which tokens contribute most to AI-detection decision.
-    Positive scores indicate AI-indicative, negative indicate human-indicative.
-    """
-    token: str = Field(..., description="The text token/word")
-    attribution_score: float = Field(
-        ..., 
-        description="Attribution score: positive = AI-indicative, negative = human-indicative"
-    )
-    position: int = Field(..., ge=0, description="Token position in text")
-    interpretation: str = Field(
-        default="neutral",
-        description="Interpretation: 'ai_indicative', 'human_indicative', or 'neutral'"
-    )
-    perplexity: Optional[float] = Field(default=None, description="Perplexity score for this token")
-
-
-class PerplexityBreakdown(BaseSchema):
-    """
-    Perplexity analysis breakdown for text segments.
-    
-    Shows which parts of text have anomalous perplexity scores.
-    """
-    segment: str = Field(..., description="The text segment analyzed")
-    perplexity: float = Field(..., ge=0, description="Perplexity score for this segment")
-    token_count: int = Field(default=0, ge=0, description="Number of tokens in segment")
-    is_anomalous: bool = Field(default=False, description="Whether perplexity is anomalously low (AI-like)")
 
 
 class SpatialResult(BaseSchema):
@@ -324,41 +290,6 @@ class AudioResult(BaseSchema):
     )
 
 
-class TextResult(BaseSchema):
-    """
-    AI-generated text detection results.
-    
-    Uses RADAR model with perplexity/burstiness analysis:
-    - Low perplexity = likely AI (too predictable)
-    - Low burstiness = likely AI (uniform variance)
-    """
-    ai_probability: float = Field(..., ge=0, le=1, description="Probability text is AI-generated")
-    perplexity_score: float = Field(default=0.0, description="GPT-2 perplexity score")
-    burstiness_score: float = Field(default=0.0, description="Sentence length variance")
-    radar_score: Optional[float] = Field(default=None, description="RADAR classifier score")
-    # XAI Enhancement Fields
-    token_attributions: List[TokenAttribution] = Field(
-        default_factory=list,
-        description="Token-level attribution scores"
-    )
-    perplexity_breakdown: List[PerplexityBreakdown] = Field(
-        default_factory=list,
-        description="Per-segment perplexity analysis"
-    )
-    roberta_score: Optional[float] = Field(
-        default=None,
-        ge=0,
-        le=1,
-        description="RoBERTa AI-detector model score"
-    )
-    vocabulary_diversity: float = Field(
-        default=0.0,
-        ge=0,
-        le=1,
-        description="Vocabulary diversity score"
-    )
-
-
 class C2PAManifest(BaseSchema):
     """
     C2PA Content Credentials data.
@@ -401,9 +332,10 @@ class ImageResult(BaseSchema):
     # DCT Features
     dct_anomaly_score: float = Field(default=0.0, ge=0, le=1, description="DCT frequency anomaly score")
     spectral_flatness: float = Field(default=0.0, ge=0, le=1, description="Spectral flatness measure")
-    # Model scores
-    siglip_score: float = Field(default=0.0, ge=0, le=1, description="SigLIP classifier score")
-    efficientnet_score: float = Field(default=0.0, ge=0, le=1, description="EfficientNet classifier score")
+    # Ensemble scores
+    ensemble_score: float = Field(default=0.0, ge=0, le=1, description="Ensemble model score")
+    ensemble_primary_available: bool = Field(default=False, description="Primary ensemble model available")
+    ensemble_secondary_available: bool = Field(default=False, description="Secondary ensemble model available")
     # XAI Enhancement Fields
     manipulation_regions: List[ManipulationRegion] = Field(
         default_factory=list,
@@ -472,14 +404,6 @@ class EvidencePackage(BaseSchema):
     feature_importance: List[FeatureImportance] = Field(
         default_factory=list,
         description="Feature importance scores"
-    )
-    token_attributions: Optional[List[TokenAttribution]] = Field(
-        default=None,
-        description="Token-level attributions for text analysis"
-    )
-    perplexity_breakdown: Optional[List[PerplexityBreakdown]] = Field(
-        default=None,
-        description="Perplexity breakdown for text analysis"
     )
     audio_artifact_regions: Optional[List[AudioArtifactRegion]] = Field(
         default=None,
@@ -560,8 +484,10 @@ class Explanation(BaseSchema):
         default="",
         description="SHA-256 hash for result reproducibility verification"
     )
-
-
+    recommendations: List[str] = Field(
+        default_factory=list,
+        description="Actionable recommendations for the user"
+    )
 # ============== ANALYSIS DOCUMENT ==============
 
 class AnalysisDocument(BaseSchema):
@@ -584,7 +510,6 @@ class AnalysisDocument(BaseSchema):
     verdict: Optional[Verdict] = None
     video_result: Optional[VideoResult] = None
     audio_result: Optional[AudioResult] = None
-    text_result: Optional[TextResult] = None
     image_result: Optional[ImageResult] = None
     metadata_result: Optional[MetadataResult] = None
     explanation: Optional[Explanation] = None
@@ -638,7 +563,6 @@ class AnalysisDetailResponse(AnalysisResponse):
     """Detailed API response with full results."""
     video_result: Optional[VideoResult] = None
     audio_result: Optional[AudioResult] = None
-    text_result: Optional[TextResult] = None
     image_result: Optional[ImageResult] = None
     metadata_result: Optional[MetadataResult] = None
     processing_time_seconds: Optional[float] = None

@@ -14,7 +14,7 @@ XAI Methods:
 Scientific References:
 - Selvaraju et al. (2019) "Grad-CAM: Visual Explanations from Deep Networks"
 - Wang et al. (2020) "CNN-generated images are surprisingly easy to spot"
-- Fagni et al. (2021) "TweepFake: Detection of AI-generated tweets"
+- Fagni et al. (2021) "TweepFake: Detection of deepfake tweets"
 - Tak et al. (2021) "AASIST: Anti-spoofing with attention and self-supervised learning"
 
 Court Admissibility:
@@ -24,6 +24,7 @@ Court Admissibility:
 """
 
 import io
+import os
 import hashlib
 import time
 import base64
@@ -38,8 +39,6 @@ from config import config
 from schemas.schemas import (
     FeatureImportance,
     VisualEvidence,
-    TokenAttribution,
-    PerplexityBreakdown,
     AudioArtifactRegion,
     EvidencePackage,
     ScientificReference,
@@ -175,9 +174,13 @@ class XAIGenerator:
         """
         Generate GradCAM++ heatmap for image deepfake detection.
         
+        Uses occlusion sensitivity when neural features are unavailable.
+        This provides model-agnostic explainability for ONNX models
+        by systematically masking image regions and measuring output changes.
+        
         Args:
             image: Input image (H, W, 3) RGB format
-            model_output: Model prediction output with 'features' key
+            model_output: Model prediction output with 'class_probabilities' key
             model_name: Name of model used for detection
             
         Returns:
@@ -186,12 +189,26 @@ class XAIGenerator:
         start_time = time.time()
         
         try:
+            features = model_output.get("features", None)
+            class_probs = model_output.get("class_probabilities", None)
+            fake_probability = model_output.get("fake_probability", None)
+            
             # Generate GradCAM++ heatmap
             heatmap = self._generate_gradcam_plusplus(
-                image, 
-                model_output.get("features", None),
-                model_output.get("class_probabilities", None)
+                image,
+                features,
+                class_probs
             )
+            
+            # If features were not available and we used synthetic heatmap,
+            # enhance with occlusion-based sensitivity analysis
+            if features is None and fake_probability is not None:
+                occlusion_heatmap = self._generate_occlusion_heatmap(
+                    image, fake_probability
+                )
+                # Blend synthetic (0.4) with occlusion (0.6)
+                heatmap = 0.4 * heatmap + 0.6 * occlusion_heatmap
+                heatmap = np.clip(heatmap, 0, 1).astype(np.float32)
             
             # Generate DCT frequency analysis overlay
             dct_heatmap = self._generate_dct_heatmap(image)
@@ -209,7 +226,7 @@ class XAIGenerator:
             
             # Calculate confidence interval using bootstrap
             confidence_interval = self._calculate_confidence_interval(
-                model_output.get("class_probabilities", np.array([[0.5, 0.5]]))
+                class_probs if class_probs is not None else np.array([[0.5, 0.5]])
             )
             
             # Generate reproducibility hash
@@ -339,6 +356,92 @@ class XAIGenerator:
             heatmap = heatmap / heatmap.max()
         
         return heatmap
+    
+    def _generate_occlusion_heatmap(
+        self,
+        image: np.ndarray,
+        fake_probability: float,
+        patch_size: int = 64,
+        stride: int = 32
+    ) -> np.ndarray:
+        """
+        Generate occlusion-based sensitivity heatmap.
+        
+        Systematically masks image patches and measures the change
+        in fake probability. Regions that cause the biggest drop
+        when masked are the most important for the detection decision.
+        
+        This provides model-agnostic explainability for ONNX models
+        where intermediate activations are not accessible.
+        
+        Args:
+            image: Input image (H, W, 3) RGB format
+            fake_probability: Model's fake probability for the full image
+            patch_size: Size of occlusion patches
+            stride: Stride between patches
+            
+        Returns:
+            Heatmap array (H, W) in [0, 1]
+        """
+        import onnxruntime as ort
+        
+        h, w = image.shape[:2]
+        heatmap = np.zeros((h, w), dtype=np.float32)
+        
+        # Load ONNX session (cached globally)
+        try:
+            model_path = "/models/deepfake_detector_v3.onnx"
+            if not os.path.exists(model_path):
+                model_path = "/models/deepfake_vit_v2.onnx"
+            if not os.path.exists(model_path):
+                return self._generate_synthetic_image_heatmap(image)
+            
+            # Reuse cached session if available
+            from analyzers.image import _primary_onnx_session
+            if _primary_onnx_session is not None:
+                sess = _primary_onnx_session
+            else:
+                sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+            
+            input_name = sess.get_inputs()[0].name
+            
+            # Preprocess image (same as primary detector)
+            def preprocess(img_arr):
+                img = cv2.resize(img_arr, (224, 224)).astype(np.float32) / 255.0
+                mean = np.array([0.5, 0.5, 0.5]).reshape(1, 1, 3)
+                std = np.array([0.5, 0.5, 0.5]).reshape(1, 1, 3)
+                normalized = (img - mean) / std
+                chw = np.transpose(normalized, (2, 0, 1))
+                return chw[np.newaxis, ...].astype(np.float32)
+            
+            # Occlude patches and measure sensitivity
+            for y in range(0, h - patch_size + 1, stride):
+                for x in range(0, w - patch_size + 1, stride):
+                    # Create occluded image
+                    occluded = image.copy()
+                    occluded[y:y+patch_size, x:x+patch_size] = 0
+                    
+                    # Run inference on occluded image
+                    input_tensor = preprocess(occluded)
+                    logits = sess.run(None, {input_name: input_tensor})[0]
+                    logit_diff = float(logits[0, 1] - logits[0, 0])
+                    occluded_fake = 1.0 / (1.0 + np.exp(-3.0 * (logit_diff - 1.0)))
+                    
+                    # Sensitivity: drop in fake probability when region is masked
+                    sensitivity = max(0, fake_probability - occluded_fake)
+                    
+                    # Accumulate sensitivity across patches
+                    heatmap[y:y+patch_size, x:x+patch_size] += sensitivity
+            
+            # Normalize
+            if heatmap.max() > 0:
+                heatmap = heatmap / heatmap.max()
+            
+            return heatmap
+            
+        except Exception as e:
+            logger.warning(f"Occlusion heatmap failed, using synthetic: {e}")
+            return self._generate_synthetic_image_heatmap(image)
     
     def _generate_dct_heatmap(self, image: np.ndarray) -> np.ndarray:
         """
@@ -659,217 +762,6 @@ class XAIGenerator:
         
         return features
     
-    # ============== TEXT XAI METHODS ==============
-    
-    def generate_text_explanation(
-        self,
-        text: str,
-        model_output: Dict[str, Any],
-        perplexity_scores: Optional[List[float]] = None
-    ) -> Tuple[List[TokenAttribution], List[PerplexityBreakdown], List[FeatureImportance]]:
-        """
-        Generate token-level attribution for AI-generated text detection.
-        
-        Args:
-            text: Input text to analyze
-            model_output: Model prediction output
-            perplexity_scores: Per-token perplexity scores if available
-            
-        Returns:
-            Tuple of (token attributions, perplexity breakdown, feature importance)
-        """
-        try:
-            # Tokenize text
-            tokens = text.split()  # Simple whitespace tokenization
-            
-            # Generate token attributions
-            token_attributions = self._generate_token_attributions(
-                tokens, model_output, perplexity_scores
-            )
-            
-            # Generate perplexity breakdown
-            perplexity_breakdown = self._generate_perplexity_breakdown(
-                tokens, perplexity_scores or []
-            )
-            
-            # Extract feature importance
-            feature_importance = self._extract_text_feature_importance(
-                model_output, token_attributions
-            )
-            
-            return token_attributions, perplexity_breakdown, feature_importance
-            
-        except Exception as e:
-            logger.error(f"Text XAI generation failed: {e}")
-            raise XAIError(f"Failed to generate text explanation: {e}")
-    
-    def _generate_token_attributions(
-        self,
-        tokens: List[str],
-        model_output: Dict[str, Any],
-        perplexity_scores: Optional[List[float]]
-    ) -> List[TokenAttribution]:
-        """
-        Generate token-level attribution scores.
-        
-        Uses perplexity and burstiness analysis to identify
-        AI-generated text patterns.
-        """
-        attributions = []
-        ai_probability = model_output.get("ai_probability", 0.5)
-        
-        # Generate synthetic attributions based on text patterns
-        for i, token in enumerate(tokens):
-            # Calculate base attribution
-            if perplexity_scores and i < len(perplexity_scores):
-                # Lower perplexity = more likely AI
-                attr_score = 1.0 - min(perplexity_scores[i] / 100.0, 1.0)
-            else:
-                # Use heuristics
-                attr_score = self._calculate_token_ai_likelihood(token, tokens)
-            
-            attributions.append(TokenAttribution(
-                token=token,
-                attribution_score=float(attr_score),
-                position=i,
-                perplexity=float(perplexity_scores[i]) if perplexity_scores and i < len(perplexity_scores) else None
-            ))
-        
-        return attributions
-    
-    def _calculate_token_ai_likelihood(self, token: str, context: List[str]) -> float:
-        """
-        Calculate likelihood that a token is AI-generated.
-        
-        Heuristics based on research:
-        - Very common words are more likely in AI text
-        - Unusual word combinations indicate human writing
-        - Uniform sentence structure indicates AI
-        """
-        # Common AI-associated patterns
-        ai_common_words = {
-            "the", "a", "an", "is", "are", "was", "were", "be", "been",
-            "being", "have", "has", "had", "do", "does", "did", "will",
-            "would", "could", "should", "may", "might", "must", "shall",
-            "additionally", "furthermore", "moreover", "however", "therefore",
-            "consequently", "nevertheless", "thus", "hence"
-        }
-        
-        # Normalize token
-        token_lower = token.lower().strip(".,!?;:\"'")
-        
-        # Base score
-        score = 0.3
-        
-        # Common word boost
-        if token_lower in ai_common_words:
-            score += 0.2
-        
-        # Length analysis (AI tends to use medium-length words)
-        if 4 <= len(token_lower) <= 8:
-            score += 0.1
-        
-        # Repetition penalty (human writers vary vocabulary more)
-        if context.count(token_lower) > 2:
-            score += 0.15
-        
-        return min(score, 1.0)
-    
-    def _generate_perplexity_breakdown(
-        self,
-        tokens: List[str],
-        perplexity_scores: List[float]
-    ) -> List[PerplexityBreakdown]:
-        """Generate per-segment perplexity breakdown."""
-        breakdown = []
-        
-        # Split into sentences (simplified)
-        current_segment = []
-        current_perplexities = []
-        segment_start = 0
-        
-        for i, token in enumerate(tokens):
-            current_segment.append(token)
-            if i < len(perplexity_scores):
-                current_perplexities.append(perplexity_scores[i])
-            
-            # Check for sentence end
-            if token.endswith((".", "!", "?")):
-                segment_text = " ".join(current_segment)
-                avg_perplexity = np.mean(current_perplexities) if current_perplexities else 50.0
-                
-                breakdown.append(PerplexityBreakdown(
-                    segment=segment_text,
-                    perplexity=float(avg_perplexity),
-                    token_count=len(current_segment),
-                    is_anomalous=float(avg_perplexity) < 30.0  # Low perplexity = AI
-                ))
-                
-                current_segment = []
-                current_perplexities = []
-                segment_start = i + 1
-        
-        # Handle remaining tokens
-        if current_segment:
-            segment_text = " ".join(current_segment)
-            avg_perplexity = np.mean(current_perplexities) if current_perplexities else 50.0
-            breakdown.append(PerplexityBreakdown(
-                segment=segment_text,
-                perplexity=float(avg_perplexity),
-                token_count=len(current_segment),
-                is_anomalous=float(avg_perplexity) < 30.0
-            ))
-        
-        return breakdown
-    
-    def _extract_text_feature_importance(
-        self,
-        model_output: Dict[str, Any],
-        token_attributions: List[TokenAttribution]
-    ) -> List[FeatureImportance]:
-        """Extract feature importance for text analysis."""
-        features = []
-        
-        # Perplexity score
-        features.append(FeatureImportance(
-            feature_name="perplexity_score",
-            importance_score=float(model_output.get("perplexity_score", 50) / 100.0),
-            contribution_direction="decreases_fake",
-            confidence=0.85,
-            feature_type="linguistic"
-        ))
-        
-        # Burstiness score
-        features.append(FeatureImportance(
-            feature_name="burstiness_score",
-            importance_score=float(model_output.get("burstiness_score", 0.5)),
-            contribution_direction="decreases_fake",
-            confidence=0.80,
-            feature_type="linguistic"
-        ))
-        
-        # RADAR score
-        if "radar_score" in model_output:
-            features.append(FeatureImportance(
-                feature_name="radar_classifier",
-                importance_score=float(model_output["radar_score"]),
-                contribution_direction="increases_fake",
-                confidence=0.90,
-                feature_type="linguistic"
-            ))
-        
-        # Token anomaly ratio
-        anomalous_ratio = sum(1 for t in token_attributions if t.attribution_score > 0.6) / max(len(token_attributions), 1)
-        features.append(FeatureImportance(
-            feature_name="token_anomaly_ratio",
-            importance_score=float(anomalous_ratio),
-            contribution_direction="increases_fake",
-            confidence=0.75,
-            feature_type="linguistic"
-        ))
-        
-        return features
-    
     # ============== VIDEO XAI METHODS ==============
     
     def generate_video_explanation(
@@ -1156,7 +1048,6 @@ class XAIGenerator:
         modality_ref_map = {
             "image": ["gradcam", "efficientnet", "dct_analysis", "gan_fingerprint"],
             "audio": ["aasist"],
-            "text": ["radar"],
             "video": ["gradcam", "xclip", "efficientnet"]
         }
         

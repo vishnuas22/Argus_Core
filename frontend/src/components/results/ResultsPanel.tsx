@@ -68,7 +68,6 @@ import type {
   Explanation,
   VideoResult,
   AudioResult,
-  TextResult,
   MetadataResult,
   ScoreBreakdown as ScoreBreakdownType
 } from '@/types/analysis';
@@ -250,7 +249,6 @@ export function ResultsPanel({
     ...analysis,
     video_result: undefined,
     audio_result: undefined,
-    text_result: undefined,
     metadata_result: undefined,
     processing_time_seconds: undefined,
     feature_importance: [],

@@ -236,11 +236,13 @@ class InputSanitizer:
         try:
             content[:1024].decode('utf-8')
             # Check for high proportion of printable chars
-            printable = sum(1 for b in content[:1024] if 32 <= b <= 126 or b in [9, 10, 13])
-            if printable / min(1024, len(content)) > 0.8:
-                return FileType.TEXT_PLAIN
+            content_sample = content[:1024]
+            if len(content_sample) > 0:
+                printable = sum(1 for b in content_sample if 32 <= b <= 126 or b in [9, 10, 13])
+                if printable / len(content_sample) > 0.8:
+                    return FileType.TEXT_PLAIN
         except UnicodeDecodeError:
-            pass
+            logger.debug("Content sample is not valid UTF-8 text")
         
         return None
     

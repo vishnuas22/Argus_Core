@@ -1,0 +1,169 @@
+{
+  "timestamp": "2026-03-05T08:41:03.856442",
+  "duration_seconds": 50.771589,
+  "summary": {
+    "passed": 8,
+    "failed": 1,
+    "warnings": 0
+  },
+  "multimodal_metrics": {
+    "video": {
+      "accuracy": 0.0,
+      "total": 2,
+      "correct": 0,
+      "false_positives": 1,
+      "false_negatives": 1,
+      "avg_inference_time": 0.17755436897277832
+    },
+    "text": {
+      "accuracy": 0.0,
+      "total": 1,
+      "correct": 0,
+      "false_positives": 0,
+      "false_negatives": 1,
+      "avg_inference_time": 0.029853105545043945
+    },
+    "image": {
+      "accuracy": 60.0,
+      "total": 9,
+      "correct": 3,
+      "false_positives": 2,
+      "false_negatives": 0,
+      "avg_inference_time": 0.03141159481472439
+    }
+  },
+  "overall_accuracy": 37.5,
+  "confusion_matrix": {
+    "authentic": {
+      "authentic": 1,
+      "fake": 2,
+      "ai_generated": 0,
+      "uncertain": 1,
+      "error": 0
+    },
+    "fake": {
+      "authentic": 0,
+      "fake": 1,
+      "ai_generated": 0,
+      "uncertain": 1,
+      "error": 0
+    },
+    "ai_generated": {
+      "authentic": 0,
+      "fake": 1,
+      "ai_generated": 0,
+      "uncertain": 1,
+      "error": 0
+    }
+  },
+  "validation_results": [
+    {
+      "sample": "AI_Generated_video.mp4",
+      "predicted": "uncertain",
+      "ground_truth": "fake",
+      "correct": false,
+      "confidence": 0.1,
+      "inference_time": 0.22026419639587402,
+      "error": null
+    },
+    {
+      "sample": "AI_generated_text.txt",
+      "predicted": "uncertain",
+      "ground_truth": "ai_generated",
+      "correct": false,
+      "confidence": 0.573,
+      "inference_time": 0.029853105545043945,
+      "error": null
+    },
+    {
+      "sample": "Deepfake.png",
+      "predicted": "fake",
+      "ground_truth": "fake",
+      "correct": true,
+      "confidence": 0.404,
+      "inference_time": 0.07635235786437988,
+      "error": null
+    },
+    {
+      "sample": "Gemini_Generated_Image_lp4ts0lp4ts0lp4t.png",
+      "predicted": "fake",
+      "ground_truth": "ai_generated",
+      "correct": true,
+      "confidence": 0.409,
+      "inference_time": 0.04569220542907715,
+      "error": null
+    },
+    {
+      "sample": "Real_video1.mp4",
+      "predicted": "uncertain",
+      "ground_truth": "authentic",
+      "correct": false,
+      "confidence": 0.1,
+      "inference_time": 0.13484454154968262,
+      "error": null
+    },
+    {
+      "sample": "blobio-imr_1482b824a04844c7ad36a5aa67c9896c.jpeg.webp",
+      "predicted": "authentic",
+      "ground_truth": "unknown",
+      "correct": true,
+      "confidence": 0.9,
+      "inference_time": 0.027886629104614258,
+      "error": null
+    },
+    {
+      "sample": "blobio-imr_61cfe080d3bb4f8c955e4086853a9155.jpg.webp",
+      "predicted": "authentic",
+      "ground_truth": "unknown",
+      "correct": true,
+      "confidence": 0.891,
+      "inference_time": 0.019302845001220703,
+      "error": null
+    },
+    {
+      "sample": "blobio-imr_bdb23622ccad4e23bdae7f1792106226.jpg.webp",
+      "predicted": "authentic",
+      "ground_truth": "unknown",
+      "correct": true,
+      "confidence": 0.9,
+      "inference_time": 0.026591777801513672,
+      "error": null
+    },
+    {
+      "sample": "blobio-imr_d705de0985ef4c9d8e162ec574de0266.jpg.webp",
+      "predicted": "fake",
+      "ground_truth": "unknown",
+      "correct": true,
+      "confidence": 0.402,
+      "inference_time": 0.018109560012817383,
+      "error": null
+    },
+    {
+      "sample": "internet_test/real_person1.jpg",
+      "predicted": "fake",
+      "ground_truth": "authentic",
+      "correct": false,
+      "confidence": 0.402,
+      "inference_time": 0.022729873657226562,
+      "error": null
+    },
+    {
+      "sample": "internet_test/real_person2.jpg",
+      "predicted": "fake",
+      "ground_truth": "authentic",
+      "correct": false,
+      "confidence": 0.402,
+      "inference_time": 0.022196531295776367,
+      "error": null
+    },
+    {
+      "sample": "internet_test/real_person3.jpg",
+      "predicted": "authentic",
+      "ground_truth": "authentic",
+      "correct": true,
+      "confidence": 0.881,
+      "inference_time": 0.023842573165893555,
+      "error": null
+    }
+  ]
+}

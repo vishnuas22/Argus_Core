@@ -169,7 +169,7 @@ class ServiceManager:
                             logger.info("Redis service ready")
                             return True
                     except Exception:
-                        pass
+                        logger.debug("Redis ping failed, retrying...")
                     time.sleep(1)
             return success
         
@@ -386,7 +386,7 @@ class ServiceManager:
                 try:
                     self._celery_process.kill()
                 except Exception:
-                    pass
+                    logger.warning("Failed to kill Celery worker process")
             finally:
                 self._celery_process = None
 
@@ -1011,11 +1011,10 @@ async def startup_dependencies() -> None:
         logger.info("="*60)
         
         critical_models = [
-            "efficientnet_b3_spatial",
+            "deepfake_detector_v3",  # Primary deepfake image detection model
             "retinaface",
             "purdue_m2",
             "clip_vit_b16",
-            "siglip_deepfake",
             "xclip_temporal"
         ]
         
@@ -1042,8 +1041,9 @@ async def startup_dependencies() -> None:
         logger.info(f"  • Total time: {warmup_time:.2f}s")
         
         if failed_models:
-            logger.warning(f"  • Failed models: {', '.join(failed_models)}")
-            logger.warning(f"  • These will use placeholder inference for development")
+            logger.error(f"  • Failed models: {', '.join(failed_models)}")
+            logger.error(f"  • Critical models failed to load - application may not function correctly")
+            logger.error(f"  • Ensure model weights are downloaded. Check AUTO_START_CONFIGURATION.md")
         
         # Log VRAM usage
         loaded = manager.get_loaded_models()
@@ -1053,7 +1053,7 @@ async def startup_dependencies() -> None:
         logger.info(f"VRAM STATUS:")
         logger.info(f"  • Used: {vram_used}MB")
         logger.info(f"  • Available: {vram_available}MB")
-        logger.info(f"  • Loaded models: {', '.join(loaded) if loaded else 'None (using placeholders)'}")
+        logger.info(f"  • Loaded models: {', '.join(loaded) if loaded else 'None'}")
         logger.info("="*60)
         
     except Exception as e:

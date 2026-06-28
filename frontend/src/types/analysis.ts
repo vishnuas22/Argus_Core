@@ -38,7 +38,7 @@ export type Verdict =
 /**
  * Supported media modalities
  */
-export type Modality = 'video' | 'audio' | 'image' | 'text';
+export type Modality = 'video' | 'audio' | 'image';
 
 /**
  * Defense level for adversarial protection
@@ -208,28 +208,6 @@ export interface AudioResult {
   spectrogram_url?: string;
 }
 
-// ============== TEXT RESULTS ==============
-
-/**
- * Text analysis result for AI-generated content
- * Matches backend TextResult from schemas/schemas.py
- */
-export interface TextResult {
-  score: number;
-  confidence: number;
-  model_used: string;
-  /** Probability text is AI-generated (0-1) */
-  ai_probability: number;
-  /** GPT-2 perplexity score */
-  perplexity_score: number;
-  /** Sentence length variance (burstiness) */
-  burstiness_score: number;
-  /** RADAR classifier score */
-  radar_score?: number;
-  /** Word count analyzed */
-  word_count?: number;
-}
-
 // ============== IMAGE RESULTS ==============
 
 /**
@@ -334,7 +312,6 @@ export interface AnalysisDetailResponse extends AnalysisResponse {
   input?: FileInput;
   video_result?: VideoResult;
   audio_result?: AudioResult;
-  text_result?: TextResult;
   image_result?: ImageResult;
   metadata_result?: MetadataResult;
   processing_time_seconds?: number;
@@ -594,17 +571,6 @@ export interface AudioResultXAI extends AudioResult {
 }
 
 /**
- * Extended TextResult with XAI fields
- */
-export interface TextResultXAI extends TextResult {
-  token_attributions: TokenAttribution[];
-  perplexity_breakdown: PerplexityBreakdown[];
-  roberta_score: number;
-  vocabulary_diversity: number;
-  xai_explanation?: XAIExplanation;
-}
-
-/**
  * Extended SpatialResult with XAI fields
  */
 export interface SpatialResultXAI extends SpatialResult {
@@ -643,7 +609,6 @@ export interface VideoResultXAI extends VideoResult {
 export interface AnalysisDetailResponseXAI extends AnalysisDetailResponse {
   video_result?: VideoResultXAI;
   audio_result?: AudioResultXAI;
-  text_result?: TextResultXAI;
   xai_evidence_package?: {
     feature_importance: FeatureImportance[];
     visual_evidence: VisualEvidence[];

@@ -11,7 +11,7 @@
  * Integration:
  * - Imports: components/ui/tabs, modality panel components
  * - Used by: analysis/[id]/page.tsx, ResultsPanel.tsx
- * - Backend: Uses video_result, audio_result, text_result, metadata_result from API
+ * - Backend: Uses video_result, audio_result, metadata_result from API
  * 
  * Features:
  * - Dynamic tab visibility based on available modalities
@@ -45,7 +45,6 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Video,
   AudioLines,
-  FileText,
   FileSearch2,
   Info,
 } from 'lucide-react';
@@ -53,7 +52,6 @@ import type { LucideIcon } from 'lucide-react';
 import type {
   VideoResult,
   AudioResult,
-  TextResult,
   MetadataResult,
   Modality,
 } from '@/types/analysis';
@@ -61,7 +59,6 @@ import type {
 // Lazy load panel components for performance
 const VideoAnalysisPanel = lazy(() => import('./VideoAnalysisPanel'));
 const AudioAnalysisPanel = lazy(() => import('./AudioAnalysisPanel'));
-const TextAnalysisPanel = lazy(() => import('./TextAnalysisPanel'));
 const MetadataPanel = lazy(() => import('./MetadataPanel'));
 
 // ============== TYPES ==============
@@ -76,8 +73,6 @@ export interface ModalityTabsProps {
   videoResult?: VideoResult;
   /** Audio analysis result */
   audioResult?: AudioResult;
-  /** Text analysis result */
-  textResult?: TextResult;
   /** Metadata analysis result */
   metadataResult?: MetadataResult;
   /** Default selected tab */
@@ -93,7 +88,7 @@ export interface ModalityTabsProps {
 /**
  * Tab types including metadata
  */
-export type ModalityTabType = 'video' | 'audio' | 'text' | 'metadata';
+export type ModalityTabType = 'video' | 'audio' | 'metadata';
 
 /**
  * Configuration for each modality tab
@@ -127,13 +122,6 @@ const TAB_CONFIG: TabConfig[] = [
     description: 'Voice cloning and spectral anomaly detection',
   },
   {
-    id: 'text',
-    label: 'Text Analysis',
-    shortLabel: 'Text',
-    icon: FileText,
-    description: 'AI-generated text detection via perplexity',
-  },
-  {
     id: 'metadata',
     label: 'Metadata',
     shortLabel: 'Meta',
@@ -156,7 +144,6 @@ const TAB_CONFIG: TabConfig[] = [
  *   analysisId={id}
  *   videoResult={detail.video_result}
  *   audioResult={detail.audio_result}
- *   textResult={detail.text_result}
  *   metadataResult={detail.metadata_result}
  *   defaultTab="video"
  * />
@@ -166,7 +153,6 @@ export function ModalityTabs({
   analysisId,
   videoResult,
   audioResult,
-  textResult,
   metadataResult,
   defaultTab,
   onTabChange,
@@ -185,15 +171,12 @@ export function ModalityTabs({
     if (audioResult) {
       tabs.push(TAB_CONFIG.find(t => t.id === 'audio')!);
     }
-    if (textResult) {
-      tabs.push(TAB_CONFIG.find(t => t.id === 'text')!);
-    }
     if (metadataResult) {
       tabs.push(TAB_CONFIG.find(t => t.id === 'metadata')!);
     }
     
     return tabs;
-  }, [videoResult, audioResult, textResult, metadataResult]);
+  }, [videoResult, audioResult, metadataResult]);
 
   // Determine default active tab
   const initialTab = useMemo(() => {
@@ -224,10 +207,6 @@ export function ModalityTabs({
       case 'audio':
         return audioResult?.score !== undefined
           ? audioResult.score * 100
-          : undefined;
-      case 'text':
-        return textResult?.score !== undefined
-          ? textResult.score * 100
           : undefined;
       case 'metadata':
         return metadataResult?.score !== undefined
@@ -322,22 +301,6 @@ export function ModalityTabs({
             <Suspense fallback={<PanelSkeleton />}>
               <AudioAnalysisPanel
                 result={audioResult}
-                analysisId={analysisId}
-              />
-            </Suspense>
-          </TabsContent>
-        )}
-
-        {/* Text Panel */}
-        {textResult && (
-          <TabsContent
-            value="text"
-            data-testid="modality-panel-text"
-            className="focus-visible:outline-none"
-          >
-            <Suspense fallback={<PanelSkeleton />}>
-              <TextAnalysisPanel
-                result={textResult}
                 analysisId={analysisId}
               />
             </Suspense>

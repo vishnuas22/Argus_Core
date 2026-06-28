@@ -69,6 +69,7 @@ import { useXAI, useFeatureImportance, useReproducibility } from '@/hooks/useXAI
 import type {
   XAIExplanation,
   ModalityXAI,
+  Modality,
   FeatureImportance as FeatureImportanceType,
   VisualEvidence,
   ScientificReference as ScientificReferenceType,
@@ -453,7 +454,7 @@ export function XAIExplanationPanel({
                   evidence={currentModalityXAI.explanation?.visual_evidence || []}
                   heatmapUrls={currentModalityXAI.heatmapUrls}
                   overlayUrl={currentModalityXAI.overlayUrl}
-                  modality={activeModality}
+                  modality={activeModality as Modality}
                 />
               )}
 

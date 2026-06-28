@@ -4,10 +4,10 @@ Argus Core - Analyzers Module
 Modality-specific deepfake detection analyzers.
 
 This module provides specialized analyzers for each media type:
-- ImageAnalyzer: Single image deepfake/AI-generated detection
+- ImageAnalyzer: Single image deepfake detection
 - VideoAnalyzer: Video deepfake detection with spatial, temporal, lipsync
 - AudioAnalyzer: Synthetic voice detection
-- TextAnalyzer: AI-generated text detection
+- MetadataAnalyzer: C2PA and EXIF metadata analysis
 - MetadataAnalyzer: C2PA and EXIF metadata analysis
 
 All analyzers inherit from BaseAnalyzer and implement the IAnalyzer interface.
@@ -32,7 +32,6 @@ from analyzers.base import (
 from analyzers.image import ImageAnalyzer, get_image_analyzer
 from analyzers.video_analyzer import VideoAnalyzer, get_video_analyzer
 from analyzers.audio import AudioAnalyzer, get_audio_analyzer
-from analyzers.text import TextAnalyzer, get_text_analyzer
 from analyzers.metadata import MetadataAnalyzer, get_metadata_analyzer
 
 __all__ = [
@@ -51,13 +50,11 @@ __all__ = [
     "ImageAnalyzer",
     "VideoAnalyzer",
     "AudioAnalyzer",
-    "TextAnalyzer",
     "MetadataAnalyzer",
     
     # Singleton getters
     "get_image_analyzer",
     "get_video_analyzer",
     "get_audio_analyzer",
-    "get_text_analyzer",
     "get_metadata_analyzer",
 ]

@@ -56,11 +56,22 @@ class LocalStorageClient:
         """Initialize local storage with base directory."""
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
+        self.bucket_uploads = "argus-uploads"
+        self.bucket_preprocessed = "argus-preprocessed"
+        self.bucket_results = "argus-results"
         logger.info(f"Local storage fallback initialized at: {self.base_path}")
     
     def _get_path(self, bucket: str, object_key: str) -> Path:
-        """Get full path for object."""
-        return self.base_path / bucket / object_key
+        """Get full path for object with path traversal protection."""
+        sanitized_key = object_key.replace("\\", "/").lstrip("/")
+        full_path = (self.base_path / bucket / sanitized_key).resolve()
+        base_resolved = self.base_path.resolve()
+        if not str(full_path).startswith(str(base_resolved)):
+            raise StorageError(
+                "path_traversal",
+                f"Invalid object key: path escapes storage base directory"
+            )
+        return full_path
     
     def _ensure_bucket_dir(self, bucket: str) -> Path:
         """Ensure bucket directory exists."""
@@ -144,6 +155,11 @@ class LocalStorageClient:
         file_path = self._get_path(bucket, object_key)
         return f"file://{file_path}"
     
+    async def ensure_default_buckets(self) -> None:
+        """Ensure default bucket directories exist on local storage."""
+        for bucket in ["argus-uploads", "argus-preprocessed", "argus-results"]:
+            self._ensure_bucket_dir(bucket)
+
     async def health_check(self) -> Dict[str, Any]:
         """Check local storage health."""
         try:
@@ -193,11 +209,14 @@ class StorageClient(IStorage):
         self.access_key = access_key or config.minio_access_key
         self.secret_key = secret_key or config.minio_secret_key
         self.secure = secure or config.minio_secure
+        self.external_endpoint = os.environ.get("MINIO_EXTERNAL_ENDPOINT", "localhost:9000")
         
         self._client = None
         self._initialized = False
         self._buckets_created = False
         self._use_local_fallback = False
+        self._fallback_retry_interval = 60
+        self._fallback_until = 0.0
         
         # Local storage fallback
         self._local_storage = LocalStorageClient()
@@ -249,6 +268,9 @@ class StorageClient(IStorage):
         logger.warning("Reconnecting to MinIO...")
         self._create_client()
         self._buckets_created = False
+        if self._client is not None:
+            self._use_local_fallback = False
+            self._fallback_until = 0.0
     
     async def _run_sync(self, func, *args, **kwargs):
         """Run synchronous MinIO operation in executor."""
@@ -283,9 +305,13 @@ class StorageClient(IStorage):
         Raises:
             StorageError: If all retries fail
         """
-        # If already using local fallback, don't try MinIO
+        # If using local fallback, attempt recovery after retry interval
         if self._use_local_fallback:
-            raise StorageError(operation_name, "MinIO unavailable, using local fallback")
+            now = time.time()
+            if now < self._fallback_until:
+                raise StorageError(operation_name, "MinIO unavailable, using local fallback")
+            logger.info("Attempting MinIO recovery after fallback period...")
+            self._reconnect()
         
         last_error = None
         S3Error = self._S3Error
@@ -320,6 +346,7 @@ class StorageClient(IStorage):
         # Switch to local fallback after exhausting retries
         logger.warning(f"{operation_name} failed after {max_retries + 1} attempts, switching to local fallback")
         self._use_local_fallback = True
+        self._fallback_until = time.time() + self._fallback_retry_interval
         raise StorageError(operation_name, str(last_error))
     
     async def health_check(self) -> Dict[str, Any]:
@@ -389,7 +416,7 @@ class StorageClient(IStorage):
                         logger.info(f"MinIO ready after {time.time() - start_time:.1f}s")
                     return True
             except Exception:
-                pass
+                logger.debug("MinIO health check failed, retrying...")
             
             await asyncio.sleep(interval)
         
@@ -483,7 +510,7 @@ class StorageClient(IStorage):
         content_type: str = "application/octet-stream"
     ) -> str:
         """
-        Upload file to MinIO with automatic retry.
+        Upload file to MinIO with automatic retry and local fallback.
         
         Args:
             file: File content as bytes or binary stream
@@ -494,6 +521,12 @@ class StorageClient(IStorage):
         Returns:
             Object key for retrieval
         """
+        # Use local storage if MinIO is unavailable
+        if self._use_local_fallback:
+            return await self._local_storage.upload_file(
+                file, bucket, object_key, content_type
+            )
+        
         # Ensure bucket exists
         await self._ensure_bucket_exists(bucket)
         
@@ -507,16 +540,27 @@ class StorageClient(IStorage):
             file.seek(0)
             file_data = file
         
-        # Upload with retry
-        await self._retry_operation(
-            f"upload_{object_key}",
-            self._client.put_object,
-            bucket,
-            object_key,
-            file_data,
-            file_size,
-            content_type=content_type
-        )
+        # Upload with retry, fall back to local on failure
+        try:
+            await self._retry_operation(
+                f"upload_{object_key}",
+                self._client.put_object,
+                bucket,
+                object_key,
+                file_data,
+                file_size,
+                content_type=content_type
+            )
+        except StorageError:
+            # Retry operation already set _use_local_fallback = True
+            if isinstance(file, bytes):
+                file_data = io.BytesIO(file)
+            else:
+                file.seek(0)
+                file_data = file
+            return await self._local_storage.upload_file(
+                file_data, bucket, object_key, content_type
+            )
         
         logger.info(f"Uploaded {object_key} to {bucket} ({file_size} bytes)")
         return object_key
@@ -527,7 +571,7 @@ class StorageClient(IStorage):
         object_key: str
     ) -> bytes:
         """
-        Download file from MinIO with automatic retry.
+        Download file from MinIO with automatic retry and local fallback.
         
         Args:
             bucket: Source bucket name
@@ -536,14 +580,22 @@ class StorageClient(IStorage):
         Returns:
             File content as bytes
         """
+        # Use local storage if MinIO is unavailable
+        if self._use_local_fallback:
+            return await self._local_storage.download_file(bucket, object_key)
+        
         await self._ensure_bucket_exists(bucket)
         
-        response = await self._retry_operation(
-            f"download_{object_key}",
-            self._client.get_object,
-            bucket,
-            object_key
-        )
+        try:
+            response = await self._retry_operation(
+                f"download_{object_key}",
+                self._client.get_object,
+                bucket,
+                object_key
+            )
+        except StorageError:
+            # Fallback to local storage
+            return await self._local_storage.download_file(bucket, object_key)
         
         try:
             data = response.read()
@@ -597,13 +649,16 @@ class StorageClient(IStorage):
         """
         Generate presigned URL for direct client access.
         
+        Rewrites the internal Docker hostname to the external endpoint
+        so that browser clients can access the URL.
+        
         Args:
             bucket: Bucket name
             object_key: Object key
             expires_seconds: URL validity duration (default 1 hour)
             
         Returns:
-            Presigned download URL
+            Presigned download URL accessible from browser
         """
         await self._ensure_bucket_exists(bucket)
         
@@ -614,6 +669,14 @@ class StorageClient(IStorage):
             object_key,
             expires=timedelta(seconds=expires_seconds)
         )
+        
+        # Rewrite internal Docker endpoint to external endpoint for browser access
+        if self.endpoint != self.external_endpoint:
+            url = url.replace(self.endpoint, self.external_endpoint)
+            # Also fix http:// to match the external access pattern
+            if self.external_endpoint.startswith("localhost"):
+                url = url.replace("http://localhost", "http://localhost")
+        
         return url
     
     async def delete_file(

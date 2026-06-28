@@ -40,7 +40,7 @@ from config import config
 from schemas.schemas import (
     AnalysisStatus, AnalysisDocument, PreprocessedData, ModalityResult,
     AggregatedResult, Modality, ContentType, TrustScore, Verdict, Explanation,
-    VideoResult, AudioResult, TextResult, ImageResult, MetadataResult
+    VideoResult, AudioResult, ImageResult, MetadataResult
 )
 from utils.logging import get_logger
 from utils.errors import PreprocessingError, InferenceError, FusionError
@@ -165,6 +165,28 @@ async def update_status(
     await publish_progress(analysis_id, status, progress_percent, current_stage)
 
 
+# Persistent Redis connection pool for progress publishing
+_orchestrator_redis_pool: Optional[Any] = None
+
+
+def _get_orchestrator_redis():
+    """
+    Get or create a persistent Redis client for progress publishing.
+    
+    Uses a module-level singleton to avoid creating new connections
+    on every progress update, which would exhaust file descriptors
+    under load.
+    """
+    global _orchestrator_redis_pool
+    if _orchestrator_redis_pool is None:
+        import redis
+        _orchestrator_redis_pool = redis.from_url(
+            config.redis_url,
+            max_connections=5,
+        )
+    return _orchestrator_redis_pool
+
+
 async def publish_progress(
     analysis_id: str,
     status: AnalysisStatus,
@@ -174,8 +196,7 @@ async def publish_progress(
 ):
     """Publish progress update to Redis for WebSocket delivery."""
     try:
-        import redis
-        r = redis.from_url(config.redis_url)
+        r = _get_orchestrator_redis()
         
         import json
         progress_data = {
@@ -187,7 +208,7 @@ async def publish_progress(
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
-        # Publish to channel
+        # Publish to channel (persistent pool, no connection churn)
         r.publish(f"argus:progress:{analysis_id}", json.dumps(progress_data))
         
     except Exception as e:
@@ -298,7 +319,9 @@ async def run_analysis_pipeline(
         final_updates = _build_final_results(
             aggregated=aggregated,
             modality_results=modality_results,
-            processing_time=processing_time
+            processing_time=processing_time,
+            content_type=preprocessed.content_type,
+            analysis_id=analysis_id
         )
         
         # Update analysis with results
@@ -347,19 +370,27 @@ async def run_analysis_pipeline(
         
     except Exception as e:
         logger.error(f"Analysis failed: {analysis_id}, error: {e}", exc_info=True)
-        await update_status(
-            analysis_id,
-            AnalysisStatus.FAILED,
-            0.0,
-            "failed",
-            str(e)
-        )
         
-        db = await get_db()
-        await db.update_job_status(job_id, "failed", str(e))
+        retries_left = self.request.retries < self.max_retries
         
-        # Retry on transient errors
-        if self.request.retries < self.max_retries:
+        try:
+            await update_status(
+                analysis_id,
+                AnalysisStatus.FAILED,
+                0.0,
+                "failed",
+                str(e)
+            )
+        except Exception as status_e:
+            logger.error(f"Status update failed on error path: {status_e}")
+        
+        try:
+            db = await get_db()
+            await db.update_job_status(job_id, "failed", str(e))
+        except Exception as db_e:
+            logger.error(f"DB status update failed on error path: {db_e}")
+        
+        if retries_left:
             raise self.retry(exc=e, countdown=30 * (self.request.retries + 1))
         raise
 
@@ -502,12 +533,13 @@ async def generate_report_task(
             logger.warning(f"Cannot generate report: analysis {analysis_id} not complete")
             return {"status": "skipped", "reason": "analysis_not_complete"}
         
-        # Generate report (placeholder - full implementation in forensics module)
+        # Generate report using forensics module
         report_key = f"results/{analysis_id}/report.pdf"
         
-        # Create placeholder PDF
-        from io import BytesIO
-        pdf_content = _generate_placeholder_report(analysis)
+        # Use real ReportGenerator from forensics module
+        from forensics.report import ReportGenerator
+        report_generator = ReportGenerator()
+        pdf_content = await report_generator.generate(analysis)
         
         # Upload to storage
         await storage.ensure_default_buckets()
@@ -605,9 +637,6 @@ def _detect_modalities(preprocessed: PreprocessedData) -> List[Modality]:
     if preprocessed.content_type == ContentType.IMAGE_ONLY:
         modalities.append(Modality.IMAGE)
     
-    if preprocessed.content_type == ContentType.TEXT_ONLY:
-        modalities.append(Modality.TEXT)
-    
     return modalities
 
 
@@ -687,10 +716,6 @@ async def _analyze_single_modality(
             
             # VideoAnalyzer.analyze() returns ModalityResult directly
             result = await analyzer.analyze(preprocessed, engine)
-            
-            # Result is already a ModalityResult with score field
-            # The score is fake probability (0-1), invert for trust score
-            result.score = 1 - result.score
             return result
             
         elif modality == Modality.AUDIO:
@@ -700,13 +725,10 @@ async def _analyze_single_modality(
             
             # AudioAnalyzer.analyze() returns ModalityResult (via BaseAnalyzer)
             result = await analyzer.analyze(preprocessed, engine)
-            
-            # The score is synthetic_probability (0-1), we need to invert for trust score
-            result.score = 1 - result.score  # Invert: high synthetic prob = low trust
             return result
             
         elif modality == Modality.IMAGE:
-            # Image analysis
+            # Image analysis - local models
             from analyzers.image import ImageAnalyzer
             analyzer = ImageAnalyzer()
             
@@ -723,25 +745,13 @@ async def _analyze_single_modality(
             if heatmap_url:
                 details["heatmap_url"] = heatmap_url
                 details["heatmap_generated"] = True
-            
+
             return ModalityResult(
                 modality=Modality.IMAGE,
                 score=result.score,
                 confidence=result.confidence,
                 details=details
             )
-            
-        elif modality == Modality.TEXT:
-            # Text analysis
-            from analyzers.text import TextAnalyzer
-            analyzer = TextAnalyzer()
-            
-            result = await analyzer.analyze(preprocessed, engine)
-            
-            # TextAnalyzer.analyze() already returns a ModalityResult
-            # The score is ai_probability (0-1), we need to invert for trust score
-            result.score = 1 - result.score  # Invert: high AI prob = low trust
-            return result
         
         else:
             raise ValueError(f"Unknown modality: {modality}")
@@ -773,7 +783,9 @@ async def _aggregate_results(
 def _build_final_results(
     aggregated: AggregatedResult,
     modality_results: List[ModalityResult],
-    processing_time: float
+    processing_time: float,
+    content_type: ContentType,
+    analysis_id: str = ""
 ) -> dict:
     """
     Build final analysis results for database update.
@@ -787,7 +799,7 @@ def _build_final_results(
     scorer = get_trust_scorer()
     
     # Compute trust score
-    trust_score, verdict = scorer.compute(aggregated)
+    trust_score, verdict = scorer.compute(aggregated, content_type=content_type)
     
     # Generate explanation
     explanation = _generate_explanation(aggregated, verdict, modality_results)
@@ -795,7 +807,6 @@ def _build_final_results(
     # Build modality-specific results
     video_result = None
     audio_result = None
-    text_result = None
     image_result = None
     
     for result in modality_results:
@@ -803,8 +814,6 @@ def _build_final_results(
             video_result = _build_video_result(result)
         elif result.modality == Modality.AUDIO:
             audio_result = _build_audio_result(result)
-        elif result.modality == Modality.TEXT:
-            text_result = _build_text_result(result)
         elif result.modality == Modality.IMAGE:
             image_result = _build_image_result(result)
     
@@ -818,16 +827,15 @@ def _build_final_results(
         
         # Generate feature importance based on modality results
         feature_importance = _generate_feature_importance(
-            aggregated, video_result, audio_result, text_result, image_result, verdict
+            aggregated, video_result, audio_result, image_result, verdict
         )
         
         # Generate evidence package with reproducibility hash
         evidence_package = _generate_evidence_package(
-            analysis_id="",  # Will be set by caller
+            analysis_id=analysis_id,
             modality_results=modality_results,
             video_result=video_result,
             audio_result=audio_result,
-            text_result=text_result,
             image_result=image_result,
             feature_importance=feature_importance,
             trust_score=trust_score.value
@@ -852,7 +860,6 @@ def _build_final_results(
         "explanation": explanation.model_dump(mode="json"),
         "video_result": video_result.model_dump(mode="json") if video_result else None,
         "audio_result": audio_result.model_dump(mode="json") if audio_result else None,
-        "text_result": text_result.model_dump(mode="json") if text_result else None,
         "image_result": image_result.model_dump(mode="json") if image_result else None,
         "processing_time_seconds": processing_time,
         "completed_at": datetime.now(timezone.utc).isoformat(),
@@ -867,27 +874,41 @@ def _build_video_result(result: ModalityResult) -> VideoResult:
     """Build VideoResult from ModalityResult."""
     from schemas.schemas import SpatialResult, TemporalResult, LipSyncResult
     
-    details = result.details
+    details = result.details or {}
+    spatial_data = details.get("spatial", {})
+    temporal_data = details.get("temporal", {})
+    lipsync_data = details.get("lipsync")
+
+    if not isinstance(spatial_data, dict):
+        spatial_data = {}
+    if not isinstance(temporal_data, dict):
+        temporal_data = {}
+    if lipsync_data is not None and not isinstance(lipsync_data, dict):
+        lipsync_data = None
     
     return VideoResult(
         spatial=SpatialResult(
-            score=details.get("spatial_score", result.score),
-            per_frame_scores=[],
-            anomaly_indices=[],
-            heatmap_urls=[]
+            score=spatial_data.get("score", details.get("spatial_score", result.score)),
+            per_frame_scores=spatial_data.get("per_frame_scores", []),
+            anomaly_indices=spatial_data.get("anomaly_indices", []),
+            heatmap_urls=spatial_data.get("heatmap_urls", [])
         ),
         temporal=TemporalResult(
-            consistency_score=details.get("temporal_score", result.score),
-            flickering_detected=False,
-            anomaly_timestamps=[]
+            consistency_score=temporal_data.get("consistency_score", details.get("temporal_score", result.score)),
+            flickering_detected=temporal_data.get("flickering_detected", False),
+            anomaly_timestamps=temporal_data.get("anomaly_timestamps", [])
         ),
         lip_sync=LipSyncResult(
-            sync_score=details.get("lip_sync_score", 1.0) or 1.0,
-            manipulation_probability=1 - (details.get("lip_sync_score", 1.0) or 1.0)
-        ) if details.get("lip_sync_score") is not None else None,
+            sync_score=lipsync_data.get("sync_score", details.get("lip_sync_score", 1.0)) if lipsync_data else (details.get("lip_sync_score", 1.0) or 1.0),
+            manipulation_probability=lipsync_data.get(
+                "manipulation_probability",
+                1 - (details.get("lip_sync_score", 1.0) or 1.0)
+            ) if lipsync_data else (1 - (details.get("lip_sync_score", 1.0) or 1.0)),
+            detected_technology=lipsync_data.get("detected_technology") if lipsync_data else None
+        ) if (lipsync_data is not None or details.get("lip_sync_score") is not None) else None,
         aggregate_score=result.score,
-        frames_analyzed=0,
-        face_detected=True
+        frames_analyzed=details.get("frames_analyzed", 0),
+        face_detected=details.get("face_detected", False)
     )
 
 
@@ -905,40 +926,44 @@ def _build_audio_result(result: ModalityResult) -> AudioResult:
         vocoder_detected = False
     
     return AudioResult(
-        synthetic_probability=details.get("synthetic_probability", 1 - result.score),
+        synthetic_probability=details.get("synthetic_probability", result.score),
         vocoder_artifacts_detected=vocoder_detected,
         voice_consistency_score=result.confidence or 0.5
     )
 
 
-def _build_text_result(result: ModalityResult) -> TextResult:
-    """Build TextResult from ModalityResult."""
-    details = result.details
-    
-    return TextResult(
-        ai_probability=details.get("ai_probability", 1 - result.score),
-        perplexity_score=details.get("perplexity", 0.0),
-        burstiness_score=details.get("burstiness", 0.0),
-        radar_score=details.get("radar_score")
-    )
+
 
 
 def _build_image_result(result: ModalityResult) -> ImageResult:
     """Build ImageResult from ModalityResult."""
     details = result.details
+    dct_features = details.get("dct_features", {}) if isinstance(details.get("dct_features"), dict) else {}
     
     return ImageResult(
-        ai_generated_probability=details.get("ai_generated_probability", details.get("fake_probability", 1 - result.score)),
-        fake_probability=details.get("fake_probability", 1 - result.score),
+        ai_generated_probability=details.get("ai_generated_probability", details.get("fake_probability", result.score)),
+        fake_probability=details.get("fake_probability", result.score),
         face_detected=details.get("face_detected", False),
         num_faces=details.get("num_faces", 0),
         face_manipulation_scores=details.get("face_manipulation_scores", []),
         heatmap_url=details.get("heatmap_url"),
-        dct_anomaly_score=details.get("dct_features", {}).get("anomaly_score", 0.0) if isinstance(details.get("dct_features"), dict) else 0.0,
-        spectral_flatness=details.get("dct_features", {}).get("spectral_flatness", 0.0) if isinstance(details.get("dct_features"), dict) else 0.0,
-        siglip_score=details.get("siglip_score", 0.0),
-        efficientnet_score=details.get("efficientnet_score", 0.0)
+        dct_anomaly_score=_safe_float(dct_features.get("anomaly_score", 0.0)),
+        spectral_flatness=_safe_float(dct_features.get("spectral_flatness", 0.0)),
+        ensemble_score=_safe_float(details.get("ensemble_score", 0.0)),
+        ensemble_primary_available=details.get("ensemble_primary_available", False),
+        ensemble_secondary_available=details.get("ensemble_secondary_available", False)
     )
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Convert value to safe float, replacing NaN/Inf with default."""
+    try:
+        f = float(value)
+        if np.isnan(f) or np.isinf(f):
+            return default
+        return float(np.clip(f, 0.0, 1.0))
+    except (TypeError, ValueError):
+        return default
 
 
 def _generate_explanation(
@@ -946,17 +971,15 @@ def _generate_explanation(
     verdict: Verdict,
     modality_results: List[ModalityResult]
 ) -> Explanation:
-    """Generate human-readable explanation."""
+    """Generate human-readable explanation using template-based engine."""
     from core.explain import ExplainabilityEngine
-    
+
     try:
         explainer = ExplainabilityEngine()
-        # Pass None for regions - modality_results are not Region objects
         return explainer.generate_textual_explanation(aggregated, verdict, None)
     except Exception as e:
         logger.warning(f"Explanation generation failed: {e}")
-        
-        # Fallback explanation
+
         return Explanation(
             summary=f"Analysis complete. Verdict: {verdict.value}",
             key_findings=[
@@ -973,7 +996,6 @@ def _generate_feature_importance(
     aggregated: AggregatedResult,
     video_result: Optional["VideoResult"],
     audio_result: Optional["AudioResult"],
-    text_result: Optional["TextResult"],
     image_result: Optional["ImageResult"],
     verdict: Verdict
 ) -> List["FeatureImportance"]:
@@ -1008,23 +1030,13 @@ def _generate_feature_importance(
                 feature_type="frequency"
             ))
         
-        # SigLIP classifier score
-        if image_result.siglip_score > 0:
+        # Ensemble classifier score
+        if image_result.ensemble_score > 0:
             features.append(FeatureImportance(
-                feature_name="siglip_classifier",
-                importance_score=image_result.siglip_score,
-                contribution_direction="increases_fake" if image_result.siglip_score > 0.5 else "decreases_fake",
-                confidence=0.85,
-                feature_type="visual"
-            ))
-        
-        # EfficientNet classifier score
-        if image_result.efficientnet_score > 0:
-            features.append(FeatureImportance(
-                feature_name="efficientnet_classifier",
-                importance_score=image_result.efficientnet_score,
-                contribution_direction="increases_fake" if image_result.efficientnet_score > 0.5 else "decreases_fake",
-                confidence=0.85,
+                feature_name="ensemble_classifier",
+                importance_score=image_result.ensemble_score,
+                contribution_direction="increases_fake" if image_result.ensemble_score > 0.5 else "decreases_fake",
+                confidence=0.90 if image_result.ensemble_primary_available and image_result.ensemble_secondary_available else 0.75,
                 feature_type="visual"
             ))
         
@@ -1123,38 +1135,6 @@ def _generate_feature_importance(
                 feature_type="acoustic"
             ))
     
-    # Text features
-    if text_result is not None:
-        ai_prob = text_result.ai_probability
-        features.append(FeatureImportance(
-            feature_name="ai_text_probability",
-            importance_score=ai_prob,
-            contribution_direction="increases_fake" if ai_prob > 0.5 else "decreases_fake",
-            confidence=0.85,
-            feature_type="linguistic"
-        ))
-        
-        if text_result.perplexity_score:
-            perplexity = text_result.perplexity_score
-            # Low perplexity often indicates AI-generated text
-            features.append(FeatureImportance(
-                feature_name="perplexity_score",
-                importance_score=min(1.0, perplexity / 100),
-                contribution_direction="decreases_fake" if perplexity > 50 else "increases_fake",
-                confidence=0.75,
-                feature_type="linguistic"
-            ))
-        
-        if text_result.radar_score:
-            radar = text_result.radar_score
-            features.append(FeatureImportance(
-                feature_name="radar_classifier",
-                importance_score=radar,
-                contribution_direction="increases_fake" if radar > 0.5 else "decreases_fake",
-                confidence=0.9,
-                feature_type="linguistic"
-            ))
-    
     # Sort by importance score descending
     features.sort(key=lambda f: f.importance_score, reverse=True)
     
@@ -1166,7 +1146,6 @@ def _generate_evidence_package(
     modality_results: List[ModalityResult],
     video_result: Optional["VideoResult"],
     audio_result: Optional["AudioResult"],
-    text_result: Optional["TextResult"],
     image_result: Optional["ImageResult"],
     feature_importance: List["FeatureImportance"],
     trust_score: float
@@ -1201,11 +1180,12 @@ def _generate_evidence_package(
     reproducibility_hash = hashlib.sha256(repro_json.encode()).hexdigest()
     
     # Calculate 95% confidence interval
-    # Based on ensemble uncertainty
+    # trust_score is on 0-100 scale, normalize to 0-1 for CI
+    trust_score_normalized = trust_score / 100.0
     uncertainty = 0.1  # Default uncertainty
     margin = 1.96 * uncertainty  # 95% CI
-    lower = max(0.0, trust_score - margin)
-    upper = min(1.0, trust_score + margin)
+    lower = max(0.0, trust_score_normalized - margin)
+    upper = min(1.0, trust_score_normalized + margin)
     confidence_interval = (round(lower, 4), round(upper, 4))
     
     # Collect visual evidence
@@ -1271,8 +1251,7 @@ def _generate_evidence_package(
     model_versions = {
         "video_spatial": "efficientnet-b3-deepfake-v2",
         "video_temporal": "xclip-temporal-v1",
-        "audio": "aasist-anti-spoof-v1",
-        "text": "radar-ai-detection-v1"
+        "audio": "aasist-anti-spoof-v1"
     }
     
     return EvidencePackage(
@@ -1302,7 +1281,6 @@ def _get_scientific_references_for_modalities(
     ref_mapping = {
         "video": ["gradcam", "efficientnet", "xclip"],
         "audio": ["aasist"],
-        "text": ["radar"],
         "image": ["gradcam", "efficientnet", "dct_analysis", "gan_fingerprint"]
     }
     
@@ -1394,7 +1372,8 @@ async def _generate_image_heatmap(
                 1.0 - analysis_details.get("fake_probability", 0.5),
                 analysis_details.get("fake_probability", 0.5)
             ]]),
-            "features": None  # Will use synthetic heatmap
+            "features": None,  # Will use occlusion-based heatmap
+            "fake_probability": analysis_details.get("fake_probability", 0.5)
         }
         
         xai_result = xai_generator.generate_image_explanation(
@@ -1436,27 +1415,6 @@ async def _generate_image_heatmap(
     except Exception as e:
         logger.error(f"Failed to generate heatmap: {e}")
         return None
-
-
-def _generate_placeholder_report(analysis: AnalysisDocument) -> bytes:
-    """Generate placeholder PDF report content."""
-    # Simple text-based placeholder
-    content = f"""
-ARGUS CORE - DEEPFAKE ANALYSIS REPORT
-=====================================
-
-Analysis ID: {analysis.analysis_id}
-Date: {datetime.now(timezone.utc).isoformat()}
-
-EXECUTIVE SUMMARY
------------------
-Verdict: {analysis.verdict.value if analysis.verdict else 'N/A'}
-Trust Score: {analysis.trust_score.value if analysis.trust_score else 'N/A'}
-
-This is a placeholder report. Full PDF generation will be implemented
-in the forensics/report.py module.
-"""
-    return content.encode("utf-8")
 
 
 # ============== ORCHESTRATOR CLASS ==============

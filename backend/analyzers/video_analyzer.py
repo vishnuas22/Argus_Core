@@ -49,6 +49,52 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _crop_mouth_region(frames: List[np.ndarray]) -> List[np.ndarray]:
+    """
+    Crop the mouth region from face frames for lip-sync analysis.
+    
+    Fallback geometric approach used when landmark-based mouth crops
+    are not available from preprocessing. Extracts the lower-center
+    portion of each frame where the mouth is typically located.
+    
+    Args:
+        frames: List of face/frame images as numpy arrays
+        
+    Returns:
+        List of cropped mouth region images
+    """
+    mouth_crops = []
+    
+    for frame in frames:
+        if frame is None or frame.size == 0:
+            continue
+            
+        h, w = frame.shape[:2]
+        
+        # Mouth region: lower 40% of face, center 60% horizontally
+        # Typical face layout: eyes at 30-40%, nose at 50-60%, mouth at 65-85%
+        y_start = int(h * 0.55)
+        y_end = int(h * 0.95)
+        x_start = int(w * 0.20)
+        x_end = int(w * 0.80)
+        
+        # Ensure valid crop dimensions
+        if y_end <= y_start or x_end <= x_start:
+            # Fallback: use bottom half, center portion
+            y_start = h // 2
+            y_end = h
+            x_start = w // 4
+            x_end = 3 * w // 4
+        
+        crop = frame[y_start:y_end, x_start:x_end]
+        
+        if crop.size > 0:
+            mouth_crops.append(crop)
+    
+    # Return original frames if cropping produced empty result
+    return mouth_crops if mouth_crops else frames
+
+
 @dataclass
 class VideoAnalysisMetrics:
     """
@@ -267,12 +313,19 @@ class VideoAnalyzer(BaseAnalyzer):
         if has_audio:
             audio_features = await self._load_audio_features(data.audio_key)
         
+        # Load landmark-based mouth crops if available (precision lip-sync)
+        mouth_crops = None
+        mouth_crop_keys = data.metadata.get("mouth_crop_keys") if data.metadata else None
+        if mouth_crop_keys:
+            mouth_crops = await self._load_frames(mouth_crop_keys)
+        
         # Run analysis pipeline
         video_result = await self.analyze_video(
             frames=face_crops,
             audio_features=audio_features,
             engine=engine,
-            has_audio=has_audio
+            has_audio=has_audio,
+            mouth_crops=mouth_crops
         )
         
         return ModalityResult(
@@ -295,7 +348,8 @@ class VideoAnalyzer(BaseAnalyzer):
         engine: "InferenceEngine",
         has_audio: bool = False,
         explainer: Optional["ExplainabilityEngine"] = None,
-        fps: float = 30.0
+        fps: float = 30.0,
+        mouth_crops: Optional[List[np.ndarray]] = None
     ) -> VideoResult:
         """
         Run complete video analysis pipeline.
@@ -309,6 +363,7 @@ class VideoAnalyzer(BaseAnalyzer):
             has_audio: Whether audio track is present
             explainer: Optional ExplainabilityEngine for heatmaps
             fps: Video frame rate for timestamp calculation
+            mouth_crops: Pre-cropped mouth regions using facial landmarks (96x96)
             
         Returns:
             VideoResult with spatial, temporal, lipsync results and aggregate
@@ -339,11 +394,11 @@ class VideoAnalyzer(BaseAnalyzer):
         # Run sub-analyzers
         if self.enable_parallel:
             spatial_result, temporal_result, lipsync_result, metrics = await self._run_parallel_analysis(
-                frames, audio_features, engine, explainer, fps, has_audio, metrics
+                frames, audio_features, engine, explainer, fps, has_audio, metrics, mouth_crops
             )
         else:
             spatial_result, temporal_result, lipsync_result, metrics = await self._run_sequential_analysis(
-                frames, audio_features, engine, explainer, fps, has_audio, metrics
+                frames, audio_features, engine, explainer, fps, has_audio, metrics, mouth_crops
             )
         
         # Aggregate results
@@ -379,7 +434,8 @@ class VideoAnalyzer(BaseAnalyzer):
         explainer: Optional["ExplainabilityEngine"],
         fps: float,
         has_audio: bool,
-        metrics: VideoAnalysisMetrics
+        metrics: VideoAnalysisMetrics,
+        mouth_crops: Optional[List[np.ndarray]] = None
     ) -> Tuple[SpatialResult, TemporalResult, Optional[LipSyncResult], VideoAnalysisMetrics]:
         """
         Run sub-analyzers in parallel for better performance.
@@ -418,10 +474,9 @@ class VideoAnalyzer(BaseAnalyzer):
             if not has_audio or audio_features is None:
                 return None
             start = time.time()
-            # Extract mouth crops from frames (in production, would be separate)
-            # For now, use face crops as proxy
-            mouth_crops = frames  # Simplified - real impl would crop mouth region
-            result = await self.lipsync.verify_sync(mouth_crops, audio_features, engine)
+            # Use landmark-based mouth crops when available, fall back to geometric crop
+            lipsync_input = mouth_crops if mouth_crops else _crop_mouth_region(frames)
+            result = await self.lipsync.verify_sync(lipsync_input, audio_features, engine)
             metrics.lipsync_time_ms = (time.time() - start) * 1000
             return result
         
@@ -450,7 +505,8 @@ class VideoAnalyzer(BaseAnalyzer):
         explainer: Optional["ExplainabilityEngine"],
         fps: float,
         has_audio: bool,
-        metrics: VideoAnalysisMetrics
+        metrics: VideoAnalysisMetrics,
+        mouth_crops: Optional[List[np.ndarray]] = None
     ) -> Tuple[SpatialResult, TemporalResult, Optional[LipSyncResult], VideoAnalysisMetrics]:
         """
         Run sub-analyzers sequentially (safer for VRAM management).
@@ -475,8 +531,9 @@ class VideoAnalyzer(BaseAnalyzer):
         lipsync_result = None
         if has_audio and audio_features is not None:
             start = time.time()
-            mouth_crops = frames  # Simplified
-            lipsync_result = await self.lipsync.verify_sync(mouth_crops, audio_features, engine)
+            # Use landmark-based mouth crops when available, fall back to geometric crop
+            lipsync_input = mouth_crops if mouth_crops else _crop_mouth_region(frames)
+            lipsync_result = await self.lipsync.verify_sync(lipsync_input, audio_features, engine)
             metrics.lipsync_time_ms = (time.time() - start) * 1000
         
         metrics.anomalies_detected = len(spatial_result.anomaly_indices)
@@ -615,12 +672,14 @@ class VideoAnalyzer(BaseAnalyzer):
         
         # Lipsync confidence
         if result.lip_sync:
-            lipsync_conf = 1.0 - abs(result.lip_sync.sync_score - 0.5) * 2
+            # Extremity from 0.5 indicates stronger evidence (high confidence).
+            lipsync_conf = abs(result.lip_sync.sync_score - 0.5) * 2
             confidences.append(lipsync_conf)
         
         if confidences:
             # Use harmonic mean for conservative estimate
-            return float(len(confidences) / sum(1/c for c in confidences))
+            safe_confidences = [max(1e-6, float(c)) for c in confidences]
+            return float(len(safe_confidences) / sum(1.0 / c for c in safe_confidences))
         
         return 0.5
     

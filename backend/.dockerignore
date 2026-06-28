@@ -58,6 +58,10 @@ Dockerfile
 docker-compose*.yml
 .docker/
 
+# Git
+.git/
+.gitignore
+
 # Documentation
 *.md
 docs/

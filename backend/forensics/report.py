@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 from utils.logging import get_logger
 from schemas.schemas import (
     AnalysisDocument, AnalysisStatus, TrustScore, Verdict, Explanation,
-    VideoResult, AudioResult, TextResult, MetadataResult, Modality
+    VideoResult, AudioResult, MetadataResult, Modality
 )
 
 logger = get_logger(__name__)
@@ -373,10 +373,6 @@ class ReportGenerator:
         if analysis.audio_result:
             story.extend(self._build_audio_section(analysis.audio_result, heading2_style, body_style))
         
-        # Text Results
-        if analysis.text_result:
-            story.extend(self._build_text_section(analysis.text_result, heading2_style, body_style))
-        
         # Metadata Results
         if analysis.metadata_result:
             story.extend(self._build_metadata_section(analysis.metadata_result, heading2_style, body_style))
@@ -505,14 +501,6 @@ class ReportGenerator:
             lines.append(f"  Voice Consistency: {analysis.audio_result.voice_consistency_score:.2%}")
             lines.append("")
         
-        # Text results
-        if analysis.text_result:
-            lines.append("Text Analysis:")
-            lines.append(f"  AI Probability: {analysis.text_result.ai_probability:.2%}")
-            lines.append(f"  Perplexity Score: {analysis.text_result.perplexity_score:.2f}")
-            lines.append(f"  Burstiness Score: {analysis.text_result.burstiness_score:.2f}")
-            lines.append("")
-        
         # Metadata results
         if analysis.metadata_result:
             lines.append("Metadata Analysis:")
@@ -535,7 +523,7 @@ class ReportGenerator:
         lines.append("  - X-CLIP: Temporal consistency analysis")
         lines.append("  - LIPINC-V2: Lip-sync verification")
         lines.append("  - Purdue-M2: Audio deepfake detection")
-        lines.append("  - RADAR: AI-generated text detection")
+        lines.append("  - AASIST: Audio anti-spoofing")
         lines.append("  - C2PA v2.3: Content authenticity verification")
         lines.append("")
         lines.append("Trust Score Calculation:")
@@ -685,54 +673,6 @@ class ReportGenerator:
         
         return elements
     
-    def _build_text_section(
-        self,
-        text_result: TextResult,
-        heading2_style,
-        body_style
-    ) -> List:
-        """Build text analysis section."""
-        from reportlab.lib.colors import HexColor
-        from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
-        from reportlab.lib.units import cm
-        
-        elements = []
-        
-        elements.append(Paragraph("3.3 Text Analysis", heading2_style))
-        elements.append(Paragraph(
-            "AI-generated text detection using RADAR model with perplexity/burstiness analysis.",
-            body_style
-        ))
-        elements.append(Spacer(1, 10))
-        
-        # Score table
-        human_probability = 1 - text_result.ai_probability
-        score_data = [
-            ["Metric", "Value", "Interpretation"],
-            ["Human Authenticity", f"{human_probability:.1%}", self._get_status_text(human_probability)],
-            ["AI Probability", f"{text_result.ai_probability:.1%}", "Lower is better"],
-            ["Perplexity Score", f"{text_result.perplexity_score:.2f}", "Higher = more human-like"],
-            ["Burstiness Score", f"{text_result.burstiness_score:.2f}", "Higher = more varied"],
-        ]
-        
-        if text_result.radar_score is not None:
-            score_data.append(["RADAR Score", f"{text_result.radar_score:.2f}", "Model confidence"])
-        
-        score_table = Table(score_data, colWidths=[4*cm, 3*cm, 5*cm])
-        score_table.setStyle(TableStyle([
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 9),
-            ('GRID', (0, 0), (-1, -1), 0.5, HexColor("#e5e7eb")),
-            ('BACKGROUND', (0, 0), (-1, 0), HexColor("#f3f4f6")),
-            ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
-            ('TOPPADDING', (0, 0), (-1, -1), 6),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ]))
-        elements.append(score_table)
-        elements.append(Spacer(1, 20))
-        
-        return elements
-    
     def _build_metadata_section(
         self,
         metadata_result: MetadataResult,
@@ -828,12 +768,6 @@ class ReportGenerator:
             models_used.extend([
                 "Purdue-M2: AI-synthesized voice generalization (AAAI 2025)",
                 "Mel-spectrogram analysis: 80 mel bands, vocoder artifact detection"
-            ])
-        
-        if analysis.text_result:
-            models_used.extend([
-                "RADAR: Adversarially robust AI-generated text detector (IBM NeurIPS)",
-                "GPT-2: Perplexity scoring for predictability analysis"
             ])
         
         if analysis.metadata_result:

@@ -33,7 +33,7 @@ from enum import Enum
 from config import config
 from schemas.schemas import (
     Modality, Verdict, ContentType, AggregatedResult, ModalityResult,
-    Explanation, ManipulationRegion, VideoResult, AudioResult, TextResult
+    Explanation, ManipulationRegion, VideoResult, AudioResult
 )
 from utils.logging import get_logger
 from utils.errors import InferenceError
@@ -48,7 +48,6 @@ class ManipulationType(str, Enum):
     FACE_REENACTMENT = "face_reenactment"
     AUDIO_CLONE = "audio_clone"
     AI_GENERATED_IMAGE = "ai_generated_image"
-    AI_GENERATED_TEXT = "ai_generated_text"
     TEMPORAL_INCONSISTENCY = "temporal_inconsistency"
     METADATA_TAMPERING = "metadata_tampering"
     UNKNOWN = "unknown"
@@ -438,9 +437,6 @@ class ExplainabilityEngine:
             elif result.modality == Modality.IMAGE:
                 return ManipulationType.AI_GENERATED_IMAGE
             
-            elif result.modality == Modality.TEXT:
-                return ManipulationType.AI_GENERATED_TEXT
-        
         return ManipulationType.UNKNOWN
     
     def _generate_modality_finding(
@@ -463,13 +459,8 @@ class ExplainabilityEngine:
         
         elif result.modality == Modality.IMAGE:
             if result.score > 0.5:
-                return f"Image: {score_pct}% AI-generated probability ({confidence_pct}% confidence)"
-            return f"Image: No AI generation artifacts detected ({confidence_pct}% confidence)"
-        
-        elif result.modality == Modality.TEXT:
-            if result.score > 0.5:
-                return f"Text: {score_pct}% AI-generated probability ({confidence_pct}% confidence)"
-            return f"Text: Writing style appears human ({confidence_pct}% confidence)"
+                return f"Image: {score_pct}% deepfake probability ({confidence_pct}% confidence)"
+            return f"Image: No deepfake artifacts detected ({confidence_pct}% confidence)"
         
         return None
     
@@ -610,7 +601,6 @@ class ExplainabilityEngine:
         verdict: Verdict,
         video_result: Optional[VideoResult] = None,
         audio_result: Optional[AudioResult] = None,
-        text_result: Optional[TextResult] = None,
         frame_heatmaps: Optional[List[HeatmapResult]] = None
     ) -> Explanation:
         """
@@ -621,7 +611,6 @@ class ExplainabilityEngine:
             verdict: Final verdict
             video_result: Optional video analysis
             audio_result: Optional audio analysis
-            text_result: Optional text analysis
             frame_heatmaps: Optional heatmaps from video
             
         Returns:
@@ -650,12 +639,6 @@ class ExplainabilityEngine:
             audio_exp = self.generate_audio_explanation(audio_result)
             for finding in audio_exp.get("findings", []):
                 enhanced_findings.append(finding["description"])
-        
-        if text_result and text_result.ai_probability > 0.5:
-            enhanced_findings.append(
-                f"Text analysis: {text_result.ai_probability:.0%} AI-generation probability "
-                f"(perplexity: {text_result.perplexity_score:.1f})"
-            )
         
         # Update explanation with enhanced findings
         return Explanation(

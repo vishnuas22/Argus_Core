@@ -160,7 +160,7 @@ class Preprocessor:
         elif file_type.value.startswith("image/"):
             return ContentType.IMAGE_ONLY
         else:
-            return ContentType.TEXT_ONLY
+            raise ValueError(f"Unsupported content type: {file_type}")
     
     async def _process_video(
         self,
@@ -190,6 +190,7 @@ class Preprocessor:
         # Upload extracted data to storage
         frame_keys = []
         face_crop_keys = []
+        mouth_crop_keys = []
         audio_key = None
         
         if self.storage:
@@ -221,6 +222,20 @@ class Preprocessor:
                 )
                 face_crop_keys.append(key)
             
+            # Upload mouth crops (landmark-based, for precise lip-sync analysis)
+            for i, crop in enumerate(video_data.mouth_crops):
+                key = f"{analysis_id}/mouths/mouth_{i:06d}.npy"
+                buffer = io_module.BytesIO()
+                np.save(buffer, crop)
+                buffer.seek(0)
+                await self.storage.upload_file(
+                    buffer.read(),
+                    config.minio_bucket_preprocessed,
+                    key,
+                    "application/octet-stream"
+                )
+                mouth_crop_keys.append(key)
+            
             # Upload audio if present as proper .npy file
             if video_data.audio is not None:
                 audio_key = f"{analysis_id}/audio/track.npy"
@@ -247,7 +262,8 @@ class Preprocessor:
                 "width": video_data.width,
                 "height": video_data.height,
                 "num_faces": len(video_data.face_detections),
-                "has_audio": video_data.has_audio
+                "has_audio": video_data.has_audio,
+                "mouth_crop_keys": mouth_crop_keys
             }
         )
     
@@ -270,8 +286,11 @@ class Preprocessor:
         
         if self.storage:
             audio_key = f"{analysis_id}/audio/track.npy"
+            buffer = io_module.BytesIO()
+            np.save(buffer, audio_data.waveform.astype(np.float32))
+            buffer.seek(0)
             await self.storage.upload_file(
-                audio_data.waveform.tobytes(),
+                buffer.read(),
                 config.minio_bucket_preprocessed,
                 audio_key,
                 "application/octet-stream"
@@ -365,32 +384,4 @@ class Preprocessor:
             }
         )
     
-    async def _process_text(
-        self,
-        analysis_id: str,
-        file_bytes: bytes,
-        options: Dict[str, Any]
-    ) -> PreprocessedData:
-        """
-        Process text file.
-        
-        Validates and stores text content.
-        """
-        logger.info(f"Processing text for analysis {analysis_id}")
-        
-        # Decode text
-        text = file_bytes.decode("utf-8", errors="replace")
-        
-        # Validate text
-        text = self.sanitizer.validate_text(text)
-        
-        return PreprocessedData(
-            analysis_id=analysis_id,
-            content_type=ContentType.TEXT_ONLY,
-            text_content=text,
-            metadata={
-                "char_count": len(text),
-                "word_count": len(text.split()),
-                "line_count": len(text.splitlines())
-            }
-        )
+

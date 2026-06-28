@@ -315,19 +315,22 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             # Count current requests
             pipe.zcard(key)
             
-            # Add current request
-            pipe.zadd(key, {str(current_time): current_time})
-            
             # Set expiry
             pipe.expire(key, 120)
             
             results = pipe.execute()
             request_count = results[1]
             
+            allowed = request_count < self.requests_per_minute
+            
+            if allowed:
+                # Only add request if within limit
+                self._redis_client.zadd(key, {str(current_time): current_time})
+            
             remaining = max(0, self.requests_per_minute - request_count - 1)
             reset_in = 60 - (current_time % 60)
             
-            return request_count < self.requests_per_minute, remaining, reset_in
+            return allowed, remaining, reset_in
             
         except Exception as e:
             logger.warning(f"Redis rate limit check failed: {e}")

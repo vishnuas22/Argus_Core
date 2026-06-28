@@ -34,7 +34,6 @@ class ModelStatus:
     name: str
     available: bool
     file_size_mb: float
-    is_placeholder: bool
     last_checked: datetime
     download_attempted: bool = False
     download_success: bool = False
@@ -105,29 +104,34 @@ class ModelInitializer:
             file_size = model_path.stat().st_size
             file_size_mb = file_size / (1024 * 1024)
             
-            # A real ONNX model should be at least 1KB
-            # Placeholders are typically ~130 bytes
-            is_placeholder = file_size < 1024
+            # A real ONNX model should be at least 10KB
+            # Small files indicate invalid/corrupted models
+            is_valid = file_size >= 10240
             
-            status = ModelStatus(
-                name=model_name,
-                available=True,
-                file_size_mb=file_size_mb,
-                is_placeholder=is_placeholder,
-                last_checked=datetime.now()
-            )
-            
-            if is_placeholder:
+            if not is_valid:
                 logger.warning(
-                    f"Model {model_name} appears to be a placeholder "
-                    f"({file_size} bytes). Real model needed."
+                    f"Model {model_name} file too small ({file_size} bytes). "
+                    f"Model may be corrupted or incomplete."
+                )
+                status = ModelStatus(
+                    name=model_name,
+                    available=False,
+                    file_size_mb=file_size_mb,
+                    last_checked=datetime.now(),
+                    error_message=f"File too small ({file_size} bytes) - likely corrupted"
+                )
+            else:
+                status = ModelStatus(
+                    name=model_name,
+                    available=True,
+                    file_size_mb=file_size_mb,
+                    last_checked=datetime.now()
                 )
         else:
             status = ModelStatus(
                 name=model_name,
                 available=False,
                 file_size_mb=0,
-                is_placeholder=False,
                 last_checked=datetime.now()
             )
             logger.info(f"Model {model_name} not found at {model_path}")
@@ -174,7 +178,7 @@ class ModelInitializer:
             # Check current status
             status = self.check_model_availability(model_name)
             
-            if status.available and not status.is_placeholder and not force:
+            if status.available and not force:
                 logger.info(f"Model {model_name} already available ({status.file_size_mb:.1f}MB)")
                 return True
             
@@ -195,7 +199,6 @@ class ModelInitializer:
                         name=model_name,
                         available=True,
                         file_size_mb=result.get("file_size_mb", 0),
-                        is_placeholder=False,
                         last_checked=datetime.now(),
                         download_attempted=True,
                         download_success=True
@@ -208,7 +211,6 @@ class ModelInitializer:
                         name=model_name,
                         available=status.available,
                         file_size_mb=status.file_size_mb,
-                        is_placeholder=status.is_placeholder,
                         last_checked=datetime.now(),
                         download_attempted=True,
                         download_success=False,
@@ -275,7 +277,7 @@ class ModelInitializer:
         for name in model_names:
             status = self.check_model_availability(name)
             
-            if not status.available or status.is_placeholder:
+            if not status.available:
                 if self.auto_download:
                     success = self.download_model(name)
                     results[name] = success
@@ -288,7 +290,7 @@ class ModelInitializer:
     
     def get_missing_models(self, model_names: List[str]) -> List[str]:
         """
-        Get list of models that are missing or are placeholders.
+        Get list of models that are missing or invalid.
         
         Args:
             model_names: List of model names to check
@@ -299,7 +301,7 @@ class ModelInitializer:
         missing = []
         for name in model_names:
             status = self.check_model_availability(name)
-            if not status.available or status.is_placeholder:
+            if not status.available:
                 missing.append(name)
         return missing
     
@@ -314,7 +316,6 @@ class ModelInitializer:
             name: {
                 "available": status.available,
                 "file_size_mb": status.file_size_mb,
-                "is_placeholder": status.is_placeholder,
                 "download_attempted": status.download_attempted,
                 "download_success": status.download_success,
                 "error": status.error_message
@@ -329,12 +330,9 @@ class ModelInitializer:
         print("=" * 60)
         
         for name, status in self._model_status.items():
-            if status.available and not status.is_placeholder:
+            if status.available:
                 icon = "✓"
                 status_text = f"Available ({status.file_size_mb:.1f}MB)"
-            elif status.available and status.is_placeholder:
-                icon = "⚠"
-                status_text = f"Placeholder ({status.file_size_mb:.3f}MB)"
             else:
                 icon = "✗"
                 status_text = "Missing"
@@ -421,7 +419,7 @@ def is_model_ready(model_name: str) -> bool:
         model_name: Name of the model
         
     Returns:
-        True if model is available and not a placeholder
+        True if model is available
     """
     status = check_model_status(model_name)
-    return status.available and not status.is_placeholder
+    return status.available

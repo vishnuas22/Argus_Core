@@ -1,0 +1,37 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests", "."]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "-x",
+]
+markers = [
+    "integration: Tests requiring external infrastructure (MongoDB, Redis, MinIO)",
+    "slow: Tests that take longer than 5 seconds",
+    "websocket: WebSocket endpoint tests",
+    "api: HTTP API endpoint tests",
+    "unit: Pure unit tests without external dependencies",
+]
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "tests/*",
+    "test_*",
+    "venv/*",
+    "__pycache__/*",
+]
+
+[tool.coverage.report]
+fail_under = 60
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.",
+]

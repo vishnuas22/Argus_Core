@@ -344,14 +344,6 @@ class MetadataAnalyzer(BaseAnalyzer):
             r'created\s*with\s*ai'
         ]
         
-        # Weight configuration for authenticity scoring
-        self.weights = {
-            "c2pa_valid": 0.35,  # Strong positive signal if valid C2PA
-            "exif_consistency": 0.25,  # EXIF timestamp/data consistency
-            "file_structure": 0.20,  # File format integrity
-            "editing_markers": 0.20  # Editing software detected
-        }
-        
         logger.info("MetadataAnalyzer initialized")
     
     def get_required_models(self) -> List[str]:
@@ -790,7 +782,7 @@ class MetadataAnalyzer(BaseAnalyzer):
                             datetime_original, '%Y:%m:%d %H:%M:%S'
                         )
                     except (ValueError, TypeError):
-                        pass
+                        logger.debug(f"Invalid datetime_original format: {datetime_original}")
                 
                 datetime_digitized = exif_dict.get('DateTimeDigitized')
                 if datetime_digitized:
@@ -799,7 +791,7 @@ class MetadataAnalyzer(BaseAnalyzer):
                             datetime_digitized, '%Y:%m:%d %H:%M:%S'
                         )
                     except (ValueError, TypeError):
-                        pass
+                        logger.debug(f"Invalid datetime_digitized format: {datetime_digitized}")
                 
                 # Camera parameters
                 exif_data.iso_speed = exif_dict.get('ISOSpeedRatings')
@@ -850,7 +842,7 @@ class MetadataAnalyzer(BaseAnalyzer):
             try:
                 exif_data.software = software_match.group(1).decode('utf-8', errors='ignore').strip()
             except Exception:
-                pass
+                logger.debug("Failed to decode EXIF software field")
         
         make_match = re.search(
             rb'Make[^\x00]*\x00([^\x00]+)',
@@ -860,7 +852,7 @@ class MetadataAnalyzer(BaseAnalyzer):
             try:
                 exif_data.make = make_match.group(1).decode('utf-8', errors='ignore').strip()
             except Exception:
-                pass
+                logger.debug("Failed to decode EXIF make field")
         
         model_match = re.search(
             rb'Model[^\x00]*\x00([^\x00]+)',
@@ -870,7 +862,7 @@ class MetadataAnalyzer(BaseAnalyzer):
             try:
                 exif_data.model = model_match.group(1).decode('utf-8', errors='ignore').strip()
             except Exception:
-                pass
+                logger.debug("Failed to decode EXIF model field")
         
         return exif_data
     
@@ -1094,6 +1086,9 @@ class MetadataAnalyzer(BaseAnalyzer):
         """
         Compute overall authenticity score from metadata analysis.
         
+        Uses weight-based scoring to combine multiple signals into
+        a single authenticity score.
+        
         Higher score = more authentic signals
         Lower score = more manipulation signals
         
@@ -1103,60 +1098,80 @@ class MetadataAnalyzer(BaseAnalyzer):
         Returns:
             Authenticity score [0, 1]
         """
-        score = 0.5  # Start neutral
+        # Weight configuration for authenticity scoring
+        weights = {
+            "c2pa_valid": 0.35,          # Strongest signal: valid C2PA
+            "exif_consistency": 0.25,     # EXIF timestamp/data consistency
+            "file_structure": 0.20,       # File format integrity
+            "editing_markers": 0.20       # Editing software detected
+        }
         
-        # C2PA presence and validity (strong signal)
-        if details.c2pa_result:
-            if details.c2pa_result.present:
-                if details.c2pa_result.valid:
-                    score += 0.3  # Valid C2PA = strong authentic signal
-                elif details.c2pa_result.valid is False:
-                    score -= 0.2  # Invalid C2PA = suspicious
-                else:
-                    score += 0.1  # Present but unverified = minor positive
+        # Score each component [0, 1] where 1 = authentic
+        scores: Dict[str, float] = {}
         
-        # EXIF consistency
+        # C2PA score
+        c2pa_score = 0.5  # Neutral default
+        if details.c2pa_result and details.c2pa_result.present:
+            if details.c2pa_result.valid:
+                c2pa_score = 1.0  # Valid C2PA = fully authentic signal
+            elif details.c2pa_result.valid is False:
+                c2pa_score = 0.2  # Invalid C2PA = suspicious
+            else:
+                c2pa_score = 0.6  # Present but unverified = minor positive
+        scores["c2pa_valid"] = c2pa_score
+        
+        # EXIF consistency score
         anomaly_count = len(details.exif_anomalies)
         if anomaly_count == 0:
-            score += 0.15  # Clean EXIF = positive
+            exif_score = 1.0  # Clean EXIF
         elif anomaly_count <= 2:
-            score -= 0.1  # Minor anomalies
+            exif_score = 0.6  # Minor anomalies
         else:
-            score -= 0.25  # Many anomalies = suspicious
+            exif_score = 0.3  # Many anomalies = suspicious
+        scores["exif_consistency"] = exif_score
         
-        # File structure
+        # File structure score
+        structure_score = 0.5  # Neutral default
         if details.file_structure:
             if details.file_structure.format_valid:
-                score += 0.05
+                structure_score = 0.9  # Valid structure
             else:
-                score -= 0.15
+                structure_score = 0.3  # Invalid structure
+        scores["file_structure"] = structure_score
         
-        # Tampering indicators
-        indicator_count = len(details.tampering_indicators)
-        if indicator_count > 0:
-            score -= min(0.3, indicator_count * 0.1)
-        
-        # Check for known editing software
+        # Editing markers score (inverted: presence of editing software is negative)
+        editing_score = 0.5  # Neutral default
         if details.exif_data and details.exif_data.software:
             software_lower = details.exif_data.software.lower()
             
             # Known AI generators (strong negative)
-            ai_generators = ['midjourney', 'dall-e', 'dalle', 'stable diffusion', 
+            ai_generators = ['midjourney', 'dall-e', 'dalle', 'stable diffusion',
                            'firefly', 'runway', 'deepfake', 'faceswap']
-            for gen in ai_generators:
-                if gen in software_lower:
-                    score -= 0.3
-                    break
+            is_ai_generator = any(gen in software_lower for gen in ai_generators)
             
-            # Photo editing (minor negative)
+            if is_ai_generator:
+                editing_score = 0.1  # Confirmed AI generator
             else:
-                for pattern in self.editing_software_patterns[:5]:  # Common editors
-                    if re.search(pattern, software_lower, re.IGNORECASE):
-                        score -= 0.1
-                        break
+                # Check for editing software
+                is_editor = any(
+                    re.search(pattern, software_lower, re.IGNORECASE)
+                    for pattern in self.editing_software_patterns[:5]
+                )
+                editing_score = 0.3 if is_editor else 0.7  # Editor = minor negative
         
-        # Ensure score is in valid range
-        return float(np.clip(score, 0, 1))
+        # Tampering indicators reduce editing score
+        indicator_count = len(details.tampering_indicators)
+        if indicator_count > 0:
+            editing_score *= max(0.0, 1.0 - indicator_count * 0.15)
+        scores["editing_markers"] = editing_score
+        
+        # Weighted combination
+        authenticity_score = sum(
+            scores[component] * weights[component]
+            for component in weights
+        )
+        
+        return float(np.clip(authenticity_score, 0, 1))
     
     def _compute_confidence(self, details: MetadataAnalysisDetails) -> float:
         """

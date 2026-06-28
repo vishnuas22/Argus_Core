@@ -77,20 +77,7 @@ class ModelSource:
 # Model sources - Official ONNX models from HuggingFace Hub
 # These are the exact models specified in the registry
 MODEL_SOURCES: Dict[str, ModelSource] = {
-    # ============== SPATIAL ANALYSIS ==============
-    # EfficientNet-B3 for deepfake detection
-    # Using official EfficientNet from HuggingFace with ONNX export
-    "efficientnet_b3_spatial": ModelSource(
-        name="efficientnet_b3_spatial",
-        # Use HuggingFace's timm models which have ONNX support
-        huggingface_repo="nvidia/efficientnet-b3",
-        huggingface_filename="model.onnx",
-        size_mb=150,
-        requires_gpu=False,
-        export_onnx=True,
-        onnx_export_input_shape=[1, 3, 224, 224],
-    ),
-    
+    # ============== FEATURE EXTRACTION ==============
     # CLIP Visual Encoder - OpenAI's official model
     "clip_vit_b16": ModelSource(
         name="clip_vit_b16",
@@ -111,7 +98,6 @@ MODEL_SOURCES: Dict[str, ModelSource] = {
         huggingface_filename="onnx/model.onnx",
         size_mb=600,
         requires_gpu=True,
-        cpu_alternative="efficientnet_b3_spatial",
         export_onnx=True,
         onnx_export_input_shape=[1, 16, 3, 224, 224],
     ),
@@ -119,12 +105,12 @@ MODEL_SOURCES: Dict[str, ModelSource] = {
     # ============== LIP-SYNC DETECTION ==============
     "lipinc_v2": ModelSource(
         name="lipinc_v2",
-        # Use official lip-sync detection model
-        huggingface_repo="facebook/wav2vec2-base-960h",
-        huggingface_filename="onnx/encoder_model.onnx",
+        # LIPINC-V2 is treated as a custom checkpoint in this codebase.
+        # Do not map it to an unrelated public model.
+        huggingface_repo=None,
+        huggingface_filename=None,
         size_mb=350,
         requires_gpu=True,
-        cpu_alternative="efficientnet_b3_spatial",
     ),
     
     # ============== AUDIO ANALYSIS ==============
@@ -150,41 +136,26 @@ MODEL_SOURCES: Dict[str, ModelSource] = {
         export_onnx=True,
         onnx_export_input_shape=[1, 80, 400],
     ),
-    
-    # ============== TEXT ANALYSIS ==============
-    # GPT-2 for perplexity-based detection
-    "gpt2_perplexity": ModelSource(
-        name="gpt2_perplexity",
-        huggingface_repo="gpt2",
-        huggingface_filename="onnx/decoder_model.onnx",
-        size_mb=500,
+
+    # Wav2Vec2 Large XLSR for audio deepfake detection (ASVspoof2019, 4.01% EER)
+    "wav2vec2_antispoof": ModelSource(
+        name="wav2vec2_antispoof",
+        huggingface_repo="pranjal-pravesh/wav2vec2-large-xlsr-deepfake-audio-classification",
+        huggingface_filename="model_int8.onnx",
+        size_mb=340,
         requires_gpu=False,
-        export_onnx=True,
-        onnx_export_input_shape=[1, 512],
+        export_onnx=False,  # Already ONNX
     ),
     
-    # RADAR for AI text detection
-    "radar_text": ModelSource(
-        name="radar_text",
-        # Use OpenAI's RoBERTa detector
-        huggingface_repo="roberta-base-openai-detector",
+    # ============== DEEPFAKE IMAGE DETECTION ==============
+    # deepfake_detector_v3 - Primary deepfake image detection model
+    "deepfake_detector_v3": ModelSource(
+        name="deepfake_detector_v3",
+        huggingface_repo="onnx-community/Deep-Fake-Detector-v2-Model-ONNX",
         huggingface_filename="onnx/model.onnx",
-        size_mb=500,
+        size_mb=420,
         requires_gpu=False,
-        export_onnx=True,
-        onnx_export_input_shape=[1, 512],
-    ),
-    
-    # ============== IMAGE ANALYSIS ==============
-    # SigLIP for AI-generated image detection
-    "siglip_deepfake": ModelSource(
-        name="siglip_deepfake",
-        huggingface_repo="google/siglip-so400m-patch14-384",
-        huggingface_filename="model.onnx",
-        size_mb=450,
-        requires_gpu=False,
-        export_onnx=True,
-        onnx_export_input_shape=[1, 3, 384, 384],
+        export_onnx=False,  # Already ONNX
     ),
     
     # ============== FACE DETECTION ==============
@@ -645,9 +616,8 @@ class ModelDownloader:
             Dict of model name to path
         """
         essential_models = [
-            "efficientnet_b3_spatial",
+            "deepfake_detector_v3",  # Primary deepfake image detection model
             "clip_vit_b16",
-            "siglip_deepfake",
             "retinaface",
         ]
         

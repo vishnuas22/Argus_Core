@@ -44,6 +44,7 @@ class VideoData:
     frames: List[np.ndarray] = field(default_factory=list)
     face_crops: List[np.ndarray] = field(default_factory=list)
     face_detections: List[FaceDetection] = field(default_factory=list)
+    mouth_crops: List[np.ndarray] = field(default_factory=list)
     audio: Optional[np.ndarray] = None
     audio_sample_rate: int = 16000
     fps: float = 0.0
@@ -140,6 +141,7 @@ class MediaExtractor:
             # Detect faces and crop
             face_crops = []
             face_detections = []
+            mouth_crops = []
             
             for i, frame in enumerate(frames):
                 detections = await self._detect_faces(frame)
@@ -152,8 +154,13 @@ class MediaExtractor:
                     crop = self._crop_face(frame, det)
                     if crop is not None:
                         face_crops.append(crop)
+                    
+                    # Crop mouth region using landmarks for precise lip-sync analysis
+                    mouth = await self._crop_mouth(frame, det)
+                    if mouth is not None:
+                        mouth_crops.append(mouth)
             
-            logger.info(f"Detected {len(face_detections)} faces")
+            logger.info(f"Detected {len(face_detections)} faces, {len(mouth_crops)} mouth crops")
             
             # Extract audio if requested
             audio = None
@@ -169,6 +176,7 @@ class MediaExtractor:
                 frames=frames,
                 face_crops=face_crops,
                 face_detections=face_detections,
+                mouth_crops=mouth_crops,
                 audio=audio,
                 audio_sample_rate=self.audio_sample_rate,
                 fps=fps,
@@ -370,7 +378,71 @@ class MediaExtractor:
         except Exception as e:
             logger.warning(f"Face crop failed: {e}")
             return None
-    
+
+    async def _crop_mouth(
+        self,
+        frame: np.ndarray,
+        detection: FaceDetection,
+        crop_size: Tuple[int, int] = (96, 96)
+    ) -> Optional[np.ndarray]:
+        """
+        Crop mouth region from frame using facial landmarks.
+
+        Uses mouth_left/mouth_right landmarks from RetinaFace detection
+        to precisely localize the mouth, avoiding naive geometric guessing.
+
+        Args:
+            frame: Source frame (H, W, 3)
+            detection: Face detection with landmarks
+            crop_size: Output crop size (width, height)
+
+        Returns:
+            Cropped mouth image or None
+        """
+        try:
+            if not detection.landmarks:
+                return None
+
+            mouth_left = detection.landmarks.get("mouth_left")
+            mouth_right = detection.landmarks.get("mouth_right")
+            nose = detection.landmarks.get("nose")
+
+            if not mouth_left or not mouth_right:
+                return None
+
+            # Center between mouth corners
+            cx = (mouth_left[0] + mouth_right[0]) // 2
+            # Vertical center: halfway between nose and mouth line, with bias toward mouth
+            if nose:
+                mouth_y = (mouth_left[1] + mouth_right[1]) // 2
+                cy = (nose[1] + mouth_y) // 2 + int(abs(mouth_right[1] - mouth_left[1]) * 0.15)
+            else:
+                cy = (mouth_left[1] + mouth_right[1]) // 2
+
+            # Mouth width with margin
+            mouth_width = abs(mouth_right[0] - mouth_left[0])
+            margin = int(mouth_width * 0.6)
+
+            crop_w = mouth_width + 2 * margin
+            crop_h = int(crop_w * 0.75)
+
+            x1 = max(0, cx - crop_w // 2)
+            y1 = max(0, cy - crop_h // 2)
+            x2 = min(frame.shape[1], cx + crop_w // 2)
+            y2 = min(frame.shape[0], cy + crop_h // 2)
+
+            crop = frame[y1:y2, x1:x2]
+            if crop.size == 0:
+                return None
+
+            pil_crop = Image.fromarray(crop)
+            pil_crop = pil_crop.resize(crop_size, Image.LANCZOS)
+            return np.array(pil_crop)
+
+        except Exception as e:
+            logger.warning(f"Mouth crop failed: {e}")
+            return None
+
     async def _extract_audio_track(
         self,
         path: str

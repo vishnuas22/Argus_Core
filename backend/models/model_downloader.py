@@ -8,14 +8,13 @@ Implements: plans/MODEL_ARCHITECTURE_REALIGNMENT.md - Phase 2.2
 Features:
 - Downloads models from HuggingFace Hub
 - Exports PyTorch models to ONNX format
-- Supports Audio (AASIST, Wav2Vec2), Video (X-CLIP), Text (RoBERTa, GPT-2)
+- Supports Audio (AASIST, Wav2Vec2), Video (X-CLIP)
 - Validates model integrity
 - GPU/CPU fallback
 
 Usage:
     python -m models.model_downloader --all
     python -m models.model_downloader --modality audio
-    python -m models.model_downloader --model roberta_ai_detector
 """
 
 import argparse
@@ -88,6 +87,7 @@ class ModelDownloadConfig:
     dynamic_axes: Optional[Dict[str, Dict[int, str]]] = None
     requires_tokenizer: bool = False
     requires_processor: bool = False
+    hf_onnx_filename: Optional[str] = None  # Exact ONNX filename in HuggingFace repo (direct download)
     description: str = ""
     license: str = "Apache-2.0"
     academic_reference: str = ""
@@ -145,75 +145,24 @@ MODEL_CONFIGS: Dict[str, ModelDownloadConfig] = {
         license="Apache-2.0",
         academic_reference="https://arxiv.org/abs/2006.11477"
     ),
-    
-    # ============== TEXT MODELS ==============
-    "roberta_ai_detector": ModelDownloadConfig(
-        name="roberta_ai_detector",
-        hf_model_id="roberta-base-openai-detector",
-        model_type="text",
+
+    "wav2vec2_antispoof": ModelDownloadConfig(
+        name="wav2vec2_antispoof",
+        hf_model_id="pranjal-pravesh/wav2vec2-large-xlsr-deepfake-audio-classification",
+        hf_onnx_filename="model_int8.onnx",
+        model_type="audio",
         task="classification",
-        output_path="/models/roberta_ai_detector.onnx",
-        input_shapes={
-            "input_ids": (1, 512),
-            "attention_mask": (1, 512)
-        },
+        output_path="/models/wav2vec2_antispoof.onnx",
+        input_shapes={"input_values": (1, 64600)},
         output_names=["logits"],
         num_classes=2,
-        class_labels=["human", "ai_generated"],
-        max_seq_length=512,
-        requires_tokenizer=True,
-        dynamic_axes={
-            "input_ids": {0: "batch_size", 1: "sequence_length"},
-            "attention_mask": {0: "batch_size", 1: "sequence_length"},
-            "logits": {0: "batch_size"}
-        },
-        description="RoBERTa-based AI text detector trained on GPT-2 outputs",
-        license="MIT",
-        academic_reference="https://github.com/openai/gpt-2-output-dataset"
-    ),
-    
-    "gpt2_perplexity": ModelDownloadConfig(
-        name="gpt2_perplexity",
-        hf_model_id="openai-community/gpt2",
-        model_type="text",
-        task="feature_extraction",
-        output_path="/models/gpt2_small.onnx",
-        input_shapes={
-            "input_ids": (1, 512)
-        },
-        output_names=["logits"],
-        num_classes=50257,  # GPT-2 vocab size
-        max_seq_length=512,
-        requires_tokenizer=True,
-        dynamic_axes={
-            "input_ids": {0: "batch_size", 1: "sequence_length"},
-            "logits": {0: "batch_size", 1: "sequence_length"}
-        },
-        description="GPT-2 small for perplexity-based AI text detection",
-        license="MIT",
-        academic_reference="https://arxiv.org/abs/1905.04225"
-    ),
-    
-    "modernbert_ai_detector": ModelDownloadConfig(
-        name="modernbert_ai_detector",
-        hf_model_id="answerdotai/ModernBERT-base",
-        model_type="text",
-        task="classification",
-        output_path="/models/modernbert_ai_detector.onnx",
-        input_shapes={
-            "input_ids": (1, 512),
-            "attention_mask": (1, 512)
-        },
-        output_names=["logits"],
-        num_classes=2,
-        class_labels=["human", "ai_generated"],
-        max_seq_length=512,
-        requires_tokenizer=True,
-        description="ModernBERT-base for AI text detection (fine-tuning required)",
+        class_labels=["bonafide", "spoof"],
+        audio_sample_rate=16000,
+        description="Wav2Vec2 Large XLSR fine-tuned for audio deepfake detection (ASVspoof2019, 4.01% EER). INT8 quantized ONNX.",
         license="Apache-2.0",
-        academic_reference="https://arxiv.org/abs/2412.13663"
+        academic_reference="https://arxiv.org/abs/2006.11477"
     ),
-    
+
     # ============== VIDEO MODELS ==============
     "xclip_temporal": ModelDownloadConfig(
         name="xclip_temporal",
@@ -265,35 +214,6 @@ MODEL_CONFIGS: Dict[str, ModelDownloadConfig] = {
         description="CLIP ViT-Base for image-text feature extraction",
         license="MIT",
         academic_reference="https://arxiv.org/abs/2103.00020"
-    ),
-    
-    # ============== IMAGE MODELS (Already have ONNX) ==============
-    "efficientnet_b3_spatial": ModelDownloadConfig(
-        name="efficientnet_b3_spatial",
-        hf_model_id="prithivMLmods/Deepfake-Detection-Exp-02-22-ONNX",
-        model_type="image",
-        task="classification",
-        output_path="/models/efficientnet_b3_spatial.onnx",
-        input_shapes={"pixel_values": (1, 3, 224, 224)},
-        output_names=["logits"],
-        num_classes=2,
-        class_labels=["real", "fake"],
-        description="EfficientNet-B3 deepfake detector",
-        license="Apache-2.0"
-    ),
-    
-    "siglip_deepfake": ModelDownloadConfig(
-        name="siglip_deepfake",
-        hf_model_id="prithivMLmods/AI-vs-Deepfake-vs-Real-ONNX",
-        model_type="image",
-        task="classification",
-        output_path="/models/siglip_deepfake.onnx",
-        input_shapes={"pixel_values": (1, 3, 224, 224)},
-        output_names=["logits"],
-        num_classes=3,
-        class_labels=["real", "deepfake", "ai_generated"],
-        description="SigLIP-based 3-class image classifier",
-        license="Apache-2.0"
     ),
 }
 
@@ -361,7 +281,10 @@ class ProductionModelDownloader:
             onnx_filename = f"{model_config.name}.onnx"
             
             # Common ONNX file names in HuggingFace repos
-            possible_names = [
+            possible_names = []
+            if model_config.hf_onnx_filename:
+                possible_names.append(model_config.hf_onnx_filename)
+            possible_names += [
                 onnx_filename,
                 "model.onnx",
                 "onnx/model.onnx",

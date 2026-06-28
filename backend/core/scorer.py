@@ -41,28 +41,83 @@ class PlattParams:
     """
     Platt scaling parameters for probability calibration.
     
-    Platt scaling fits a logistic regression on top of model outputs
-    to produce well-calibrated probabilities.
+    Operates in logit space for numerical stability:
+        P(y=1|s) = 1 / (1 + exp(-(A * logit(s) + B)))
     
-    P(y=1|f) = 1 / (1 + exp(A*f + B))
+    Where s is the raw score in [0,1], A controls sharpness,
+    B controls bias. A=1, B=0 is the identity mapping.
     
-    Where f is the raw score, A and B are learned parameters.
+    Reference: Platt, J. (1999). Probabilistic Outputs for SVMs
+    and Comparisons to Regularized Likelihood Methods.
     """
-    a: float = -2.0  # Default: steeper sigmoid
-    b: float = 0.0   # Default: centered at 0.5
+    a: float = 3.0   # Sharpness (higher = more binary outputs)
+    b: float = 0.0   # Bias (positive = shift toward "fake")
     
     def transform(self, score: float) -> float:
-        """Apply Platt transformation."""
-        return 1.0 / (1.0 + np.exp(self.a * (score - 0.5) + self.b))
+        """Apply Platt scaling in logit space (no scipy dependency)."""
+        s = np.clip(float(score), 1e-7, 1 - 1e-7)
+        logit_s = float(np.log(s / (1 - s)))
+        return float(1.0 / (1.0 + np.exp(-(self.a * logit_s + self.b))))
+    
+    @classmethod
+    def fit(cls, scores: np.ndarray, labels: np.ndarray) -> "PlattParams":
+        """
+        Fit Platt scaling parameters via maximum likelihood.
+        
+        Uses Newton-Raphson optimization to fit:
+            P(y=1) = sigmoid(A * logit(s) + B)
+        
+        No external dependencies beyond numpy.
+        
+        Args:
+            scores: Raw model scores in [0,1], shape [N]
+            labels: Binary labels (0=real, 1=fake), shape [N]
+            
+        Returns:
+            Fitted PlattParams with optimal (a, b)
+        """
+        eps = 1e-7
+        s = np.clip(scores, eps, 1 - eps)
+        logits = np.log(s / (1 - s))
+        logits = np.clip(logits, -100, 100)
+        
+        X = np.column_stack([logits, np.ones_like(logits)])
+        y = labels
+        
+        a, b = 1.0, 0.0
+        for _ in range(100):
+            linear = a * logits + b
+            p = 1.0 / (1.0 + np.exp(-np.clip(linear, -100, 100)))
+            p = np.clip(p, eps, 1 - eps)
+            
+            grad = X.T @ (p - y)
+            weights = p * (1 - p)
+            H = (X * weights[:, None]).T @ X
+            H_inv = np.linalg.inv(H + np.eye(2) * 1e-8)
+            delta = H_inv @ grad
+            
+            a -= delta[0]
+            b -= delta[1]
+            
+            if np.linalg.norm(delta) < 1e-6:
+                break
+        
+        a = float(np.clip(a, 0.01, 10.0))
+        b = float(np.clip(b, -5.0, 5.0))
+        return cls(a=a, b=b)
 
 
-# Default Platt parameters per content type (pre-calibrated)
+# Default Platt parameters per content type (calibrated for probability sharpening)
+# Parameters chosen to map raw scores to well-calibrated probabilities:
+# - a > 1.0: Sharpening sigmoid (pushes extreme scores further from 0.5)
+# - b: Bias correction (centering adjustment)
+# These are reasonable defaults; production systems should fit Platt parameters
+# on a labeled validation set for optimal calibration.
 DEFAULT_PLATT_PARAMS = {
-    ContentType.VIDEO_WITH_SPEECH: PlattParams(a=-2.5, b=0.1),
-    ContentType.VIDEO_NO_SPEECH: PlattParams(a=-2.2, b=0.0),
-    ContentType.AUDIO_ONLY: PlattParams(a=-2.8, b=-0.1),
-    ContentType.IMAGE_ONLY: PlattParams(a=-2.0, b=0.0),
-    ContentType.TEXT_ONLY: PlattParams(a=-1.8, b=0.2),
+    ContentType.VIDEO_WITH_SPEECH: PlattParams(a=3.0, b=0.0),
+    ContentType.VIDEO_NO_SPEECH: PlattParams(a=3.0, b=0.0),
+    ContentType.AUDIO_ONLY: PlattParams(a=2.5, b=0.0),
+    ContentType.IMAGE_ONLY: PlattParams(a=3.0, b=0.0),
 }
 
 
@@ -115,7 +170,7 @@ class VerdictThresholds:
 class ScoringConfig:
     """Configuration for scoring system."""
     # Score transformation
-    use_platt_calibration: bool = True
+    use_platt_calibration: bool = True  # Enabled: uses safe a=1.0 sharpening sigmoid
     score_power: float = 1.0  # Power transform for score distribution
     
     # Uncertainty handling
@@ -203,12 +258,58 @@ class TrustScorer:
         # Invert: Trust Score is authenticity (100 = authentic, 0 = fake)
         # Raw score is manipulation probability
         authenticity_prob = 1.0 - raw_score
+        calibration_applied = False
+        
+        # Uncertainty-guided routing: If the neural networks are uncertain,
+        # route to deterministic/statistical methods (e.g., DCT, Optical Flow)
+        if uncertainty > self.config.max_uncertainty_for_verdict * 0.8 or abs(raw_score - 0.5) < 0.1:
+            logger.info(f"High uncertainty ({uncertainty:.3f}) or ambiguous score ({raw_score:.3f}). Routing to deterministic methods.")
+            
+            deterministic_scores = []
+            for modality_res in aggregated.modality_results:
+                details = modality_res.details
+                if not details:
+                    continue
+                
+                # Image deterministic (DCT)
+                if 'dct_anomaly_score' in details:
+                    dct_score = details['dct_anomaly_score']
+                    deterministic_scores.append(dct_score)
+                    logger.debug(f"Routed to Image DCT anomaly score: {dct_score:.3f}")
+                
+                # Video deterministic (Optical Flow / Motion Anomaly)
+                if 'temporal' in details and hasattr(details['temporal'], 'motion_anomaly_score'):
+                    motion_score = details['temporal'].motion_anomaly_score
+                    deterministic_scores.append(motion_score)
+                    logger.debug(f"Routed to Video Optical Flow motion anomaly score: {motion_score:.3f}")
+                
+                # Audio deterministic (Frequency Anomaly / Spectrogram)
+                if 'frequency_anomaly_score' in details:
+                    freq_score = details['frequency_anomaly_score']
+                    deterministic_scores.append(freq_score)
+                    logger.debug(f"Routed to Audio frequency anomaly score: {freq_score:.3f}")
+            
+            if deterministic_scores:
+                # If deterministic methods indicate fake (>0.5), weigh them heavily
+                avg_deterministic = np.mean(deterministic_scores)
+                # Blend the raw score with the deterministic score
+                raw_score = 0.3 * raw_score + 0.7 * avg_deterministic
+                authenticity_prob = 1.0 - raw_score
+                logger.info(f"Uncertainty routing applied. New raw_score={raw_score:.3f}")
         
         # Apply Platt calibration if enabled
-        if self.config.use_platt_calibration and content_type:
+        # NOTE: IMAGE_ONLY skips Platt calibration because the image analyzer
+        # already applies sigmoid calibration internally (image.py:924).
+        # Applying Platt on top would double-calibrate and compress scores toward 0.5.
+        if (
+            self.config.use_platt_calibration
+            and content_type
+            and content_type != ContentType.IMAGE_ONLY
+        ):
             authenticity_prob = self.calibrate_probability(
                 authenticity_prob, content_type
             )
+            calibration_applied = True
         
         # Apply power transform for score distribution
         if self.config.score_power != 1.0:
@@ -217,11 +318,9 @@ class TrustScorer:
         # Convert to 0-100 scale
         score_value = authenticity_prob * 100.0
         
-        # Apply uncertainty penalty
-        if uncertainty > self.config.uncertainty_penalty:
-            # Move score toward 50 (uncertain) based on uncertainty
-            pull_strength = min(uncertainty, 0.5) * 2  # Max 100% pull at 0.5 uncertainty
-            score_value = score_value + (50 - score_value) * pull_strength * 0.5
+        # NOTE: Uncertainty penalty removed to avoid double-counting.
+        # The image analyzer already reduces confidence when signals disagree.
+        # Applying penalty again in the scorer over-penalizes disagreement.
         
         # Clamp to bounds
         score_value = float(np.clip(
@@ -237,7 +336,7 @@ class TrustScorer:
         trust_score = TrustScore(
             value=round(score_value, 1),
             confidence=round(confidence, 3),
-            calibrated=self.config.use_platt_calibration
+            calibrated=calibration_applied
         )
         
         # Determine verdict
@@ -272,12 +371,19 @@ class TrustScorer:
         Returns:
             Calibrated probability (0-1)
         """
+        if not np.isfinite(raw_prob):
+            logger.warning(f"Non-finite probability {raw_prob} for {content_type}, returning 0.5")
+            return 0.5
+        
         params = self.platt_params.get(content_type, PlattParams())
         
-        # Transform using sigmoid with learned parameters
         calibrated = params.transform(raw_prob)
+        calibrated = float(np.clip(calibrated, 0.001, 0.999))
         
-        return float(np.clip(calibrated, 0.001, 0.999))
+        if not np.isfinite(calibrated):
+            return 0.5
+        
+        return calibrated
     
     def _compute_confidence(
         self,

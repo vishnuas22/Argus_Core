@@ -35,9 +35,8 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 WORKDIR /app
 COPY requirements.txt .
 
-# Install all dependencies including ONNX Runtime
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir onnx onnxruntime
+# Install all dependencies (onnx/onnxruntime already in requirements.txt)
+RUN pip install --no-cache-dir -r requirements.txt
 
 # ============================================
 # Stage 2: Production
@@ -49,7 +48,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libopenblas0 \
     liblapack3 \
     libhdf5-hl-310 \
-    libssl3 \
+    libssl3t64 \
     libffi8 \
     # Video/Image processing
     ffmpeg \
@@ -107,8 +106,9 @@ USER argus
 EXPOSE 8000
 
 # Health check
+ARG HEALTHCHECK_PORT=8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:${HEALTHCHECK_PORT}/health || exit 1
 
 # Startup script that downloads models before starting server
 COPY --chown=argus:argus docker-entrypoint.sh /app/

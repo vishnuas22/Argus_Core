@@ -62,7 +62,9 @@ class DatabaseClient:
             self._client = AsyncIOMotorClient(
                 self.mongo_url,
                 maxPoolSize=50,
-                minPoolSize=10
+                minPoolSize=10,
+                maxIdleTimeMS=30000,
+                waitQueueTimeoutMS=5000
             )
             self._db = self._client[self.db_name]
             
@@ -83,17 +85,23 @@ class DatabaseClient:
         """Create database indexes for performance."""
         # Analyses collection indexes
         await self._db.analyses.create_index("analysis_id", unique=True)
-        await self._db.analyses.create_index("status")
-        await self._db.analyses.create_index([("created_at", DESCENDING)])
+        await self._db.analyses.create_index([("status", ASCENDING), ("created_at", DESCENDING)])
         await self._db.analyses.create_index("input.file_hash")
         
         # Jobs collection indexes
         await self._db.jobs.create_index("job_id", unique=True)
         await self._db.jobs.create_index("analysis_id")
         await self._db.jobs.create_index("status")
+        await self._db.jobs.create_index(
+            [("completed_at", ASCENDING)],
+            expireAfterSeconds=2592000
+        )
         
-        # Audit log collection - TTL index for retention
-        await self._db.audit_log.create_index([("timestamp", DESCENDING)])
+        # Audit log collection - TTL index for retention (90 days)
+        await self._db.audit_log.create_index(
+            [("timestamp", ASCENDING)],
+            expireAfterSeconds=7776000
+        )
         await self._db.audit_log.create_index("resource_id")
         
         logger.info("Database indexes created")
@@ -287,6 +295,31 @@ class DatabaseClient:
         except Exception as e:
             logger.error(f"List analyses failed: {e}")
             raise StorageError("list_analyses", str(e))
+
+    async def count_analyses(
+        self,
+        status: Optional[AnalysisStatus] = None
+    ) -> int:
+        """
+        Count analyses with optional status filter.
+        
+        Uses MongoDB count_documents which is O(1) with proper indexes
+        instead of fetching all documents.
+        
+        Args:
+            status: Filter by status
+            
+        Returns:
+            Count of matching analyses
+        """
+        try:
+            query = {}
+            if status:
+                query["status"] = status.value
+            return await self.db.analyses.count_documents(query)
+        except Exception as e:
+            logger.error(f"Count analyses failed: {e}")
+            return 0
     
     # ============== AUDIT LOG OPERATIONS ==============
     

@@ -183,7 +183,8 @@ def detect_mps() -> Optional[HardwareInfo]:
             # Get system memory in bytes, convert to MB
             system_memory = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
             memory_mb = (system_memory // (1024 * 1024)) // 2  # Assume half for GPU
-        except:
+        except Exception:
+            logger.warning("Could not determine system memory for MPS, defaulting to 8GB")
             memory_mb = 8192  # Default 8GB assumption for Apple Silicon
         
         logger.info(f"MPS detected: {device_name}, unified memory ~{memory_mb}MB")
@@ -229,7 +230,8 @@ def detect_cpu() -> HardwareInfo:
                             break
                     else:
                         cpu_name = "Unknown CPU"
-            except:
+            except Exception:
+                logger.warning("Could not read /proc/cpuinfo, using fallback CPU name")
                 cpu_name = "Unknown CPU"
         else:
             cpu_name = platform.processor() or "Unknown CPU"
@@ -242,7 +244,8 @@ def detect_cpu() -> HardwareInfo:
                 memory_mb = system_memory // (1024 * 1024)
             else:
                 memory_mb = 8192  # Default
-        except:
+        except Exception:
+            logger.warning("Could not determine system memory, defaulting to 8GB")
             memory_mb = 8192
         
         # Check available ONNX providers

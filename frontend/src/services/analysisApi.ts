@@ -249,7 +249,6 @@ function transformDetailResponse(data: AnalysisDetailResponse | Record<string, u
     input: data.input as AnalysisDetailResponse['input'],
     video_result: data.video_result as AnalysisDetailResponse['video_result'],
     audio_result: data.audio_result as AnalysisDetailResponse['audio_result'],
-    text_result: data.text_result as AnalysisDetailResponse['text_result'],
     image_result: data.image_result as AnalysisDetailResponse['image_result'],
     metadata_result: data.metadata_result as AnalysisDetailResponse['metadata_result'],
     processing_time_seconds: data.processing_time_seconds as number | undefined,

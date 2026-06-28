@@ -31,6 +31,7 @@ from models.registry import ModelRegistry, get_model_registry, ModelMetadata
 from schemas.schemas import Modality, PreprocessedData
 from utils.logging import get_logger
 from utils.errors import InferenceError, ModelLoadError
+from utils.metrics import record_model_inference, record_inference_duration
 
 logger = get_logger(__name__)
 
@@ -143,6 +144,10 @@ class InferenceEngine:
             "cache_misses": 0
         }
         
+        # Per-model locks for thread-safe ONNX session.run()
+        self._model_locks: Dict[str, asyncio.Lock] = {}
+        self._model_locks_lock = asyncio.Lock()
+        
         logger.info(
             f"InferenceEngine initialized: max_concurrent={max_concurrent_models}, "
             f"default_batch={default_batch_size}"
@@ -204,39 +209,67 @@ class InferenceEngine:
                 batch_size = self.default_batch_size
         
         try:
+            # Check if this is a PyTorch model
+            metadata = self.registry.get_model_metadata(model_name)
+            is_pytorch = metadata.download_url and metadata.download_url.startswith("pytorch:")
+            
+            if is_pytorch:
+                raise InferenceError(
+                    model_name, 
+                    "PyTorch models must be run through the analyzer's _run_pytorch_ensemble_model method, not directly through the engine"
+                )
+            
             # Load model (uses LRU cache in ModelManager)
             session = await self.model_manager.get_model(model_name)
             
-            # Run inference in batches
+            # Run inference in batches with per-model lock for thread safety
             all_outputs = []
+            model_lock = await self._get_model_lock(model_name)
             
             for i in range(0, actual_batch_size, batch_size):
                 batch = input_batch[i:i + batch_size]
                 
-                # Ensure correct dtype
                 if batch.dtype != np.float32:
                     batch = batch.astype(np.float32)
                 
-                # Get input name from session
                 input_name = session.get_inputs()[0].name
                 
-                # Run inference
-                outputs = session.run(None, {input_name: batch})
+                async with model_lock:
+                    loop = asyncio.get_running_loop()
+                    outputs = await loop.run_in_executor(
+                        self._executor,
+                        lambda: session.run(None, {input_name: batch})
+                    )
                 all_outputs.append(outputs[0])
             
             # Concatenate all outputs
             predictions = np.concatenate(all_outputs, axis=0)
             
+            # DEBUG: Log raw model outputs for diagnosis
+            logger.info(
+                f"Model {model_name} raw output: shape={predictions.shape}, "
+                f"min={predictions.min():.4f}, max={predictions.max():.4f}, "
+                f"mean={predictions.mean():.4f}, values={predictions[0][:5] if len(predictions[0]) > 5 else predictions[0]}"
+            )
+            
             # Compute confidence and probabilities
             if return_probabilities and predictions.shape[-1] >= 2:
-                # Apply softmax if not already probabilities
-                if predictions.max() > 1.0 or predictions.min() < 0.0:
-                    class_probabilities = self._softmax(predictions)
-                else:
+                # Check if output looks like probabilities (sums to ~1)
+                # Raw logits typically don't sum to 1, even if individual values are in [0,1]
+                row_sums = predictions.sum(axis=-1)
+                is_probability = np.allclose(row_sums, 1.0, atol=0.1) and predictions.min() >= 0 and predictions.max() <= 1
+                
+                if is_probability:
                     class_probabilities = predictions
+                    logger.info(f"Using raw as probabilities: {class_probabilities[0]}")
+                else:
+                    # Apply softmax to convert logits to probabilities
+                    class_probabilities = self._softmax(predictions)
+                    logger.info(f"Applied softmax: logits={predictions[0]}, probs={class_probabilities[0]}")
                 
                 # Confidence is max probability
                 confidence = float(np.max(class_probabilities))
+                logger.info(f"Confidence: {confidence:.4f}, predicted class: {np.argmax(class_probabilities[0])}")
             else:
                 class_probabilities = None
                 confidence = float(np.mean(np.abs(predictions)))
@@ -253,6 +286,16 @@ class InferenceEngine:
                 f"time={inference_time_ms:.2f}ms"
             )
             
+            # Record metrics for monitoring
+            latency_seconds = inference_time_ms / 1000.0
+            record_model_inference(
+                model_name=model_name,
+                success=True,
+                latency_seconds=latency_seconds,
+                confidence=confidence
+            )
+            record_inference_duration(model_name, latency_seconds)
+            
             return InferenceResult(
                 predictions=predictions,
                 confidence=confidence,
@@ -262,9 +305,25 @@ class InferenceEngine:
                 batch_size=actual_batch_size
             )
             
+        except InferenceError:
+            raise  # Re-raise InferenceError as-is
+        except ImportError as e:
+            latency_seconds = (time.time() - start_time)
+            record_model_inference(model_name, False, latency_seconds)
+            raise InferenceError(model_name, f"Missing dependencies: {e}")
+        except RuntimeError as e:
+            latency_seconds = (time.time() - start_time)
+            record_model_inference(model_name, False, latency_seconds)
+            raise InferenceError(model_name, f"ONNX runtime error: {e}")
+        except ValueError as e:
+            latency_seconds = (time.time() - start_time)
+            record_model_inference(model_name, False, latency_seconds)
+            raise InferenceError(model_name, f"Input validation error: {e}")
         except Exception as e:
-            logger.error(f"Inference failed for {model_name}: {e}")
-            raise InferenceError(model_name, str(e))
+            latency_seconds = (time.time() - start_time)
+            record_model_inference(model_name, False, latency_seconds)
+            logger.error(f"Inference failed for {model_name}: {type(e).__name__}: {e}")
+            raise InferenceError(model_name, f"Unexpected error: {type(e).__name__}: {e}")
     
     async def infer_batch(
         self,
@@ -350,9 +409,17 @@ class InferenceEngine:
         for model_name, task in tasks.items():
             try:
                 results[model_name] = await task
+            except InferenceError:
+                raise  # Re-raise InferenceError as-is
+            except ImportError as e:
+                raise InferenceError(model_name, f"Missing dependencies: {e}")
+            except RuntimeError as e:
+                raise InferenceError(model_name, f"ONNX runtime error: {e}")
+            except ValueError as e:
+                raise InferenceError(model_name, f"Input validation error: {e}")
             except Exception as e:
-                logger.error(f"Multi-model inference failed for {model_name}: {e}")
-                results[model_name] = None
+                logger.error(f"Multi-model inference failed for {model_name}: {type(e).__name__}: {e}")
+                raise InferenceError(model_name, f"Unexpected error: {type(e).__name__}: {e}")
         
         return results
     
@@ -448,8 +515,9 @@ class InferenceEngine:
                         arr = arr.astype(np.int64)
                     feed_dict[name] = arr
             
-            # Run inference
-            outputs = session.run(None, feed_dict)
+            model_lock = self._get_model_lock(model_name)
+            with model_lock:
+                outputs = session.run(None, feed_dict)
             predictions = outputs[0]
             
             # Compute confidence and probabilities
@@ -499,6 +567,11 @@ class InferenceEngine:
         try:
             # Get model metadata for input shape
             metadata = self.registry.get_model_metadata(model_name)
+            
+            # Skip PyTorch models - they are handled separately in analyzers
+            if metadata.download_url and metadata.download_url.startswith("pytorch:"):
+                logger.info(f"Skipping warmup for PyTorch model {model_name} (handled in analyzer)")
+                return True
             
             if dummy_input_shape:
                 shape = dummy_input_shape
@@ -623,6 +696,13 @@ class InferenceEngine:
             "available_vram_mb": self.model_manager.get_available_vram()
         }
     
+    async def _get_model_lock(self, model_name: str) -> asyncio.Lock:
+        """Get or create a per-model lock for thread-safe session.run()."""
+        async with self._model_locks_lock:
+            if model_name not in self._model_locks:
+                self._model_locks[model_name] = asyncio.Lock()
+            return self._model_locks[model_name]
+    
     def reset_stats(self) -> None:
         """Reset inference statistics."""
         self._stats = {
@@ -635,10 +715,11 @@ class InferenceEngine:
     
     @staticmethod
     def _softmax(x: np.ndarray) -> np.ndarray:
-        """Compute softmax probabilities."""
-        # Subtract max for numerical stability
+        """Compute softmax probabilities with float64 for numerical stability."""
+        x = x.astype(np.float64)
         exp_x = np.exp(x - np.max(x, axis=-1, keepdims=True))
-        return exp_x / np.sum(exp_x, axis=-1, keepdims=True)
+        result = exp_x / np.sum(exp_x, axis=-1, keepdims=True)
+        return result.astype(np.float32)
     
     async def cleanup(self) -> None:
         """Cleanup resources."""
