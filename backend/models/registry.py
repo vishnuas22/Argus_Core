@@ -40,6 +40,7 @@ class ModelCategory(str, Enum):
     LIPSYNC = "lipsync"           # Lip-sync verification
     AUDIO = "audio"               # Audio deepfake detection
     IMAGE = "image"               # Image manipulation detection
+    VIDEO = "video"               # Video deepfake detection (end-to-end)
     FACE_DETECTION = "face_detection"  # Face detection preprocessing
     FEATURE = "feature"           # Feature extraction (CLIP, etc.)
 
@@ -156,18 +157,18 @@ DEFAULT_MODELS: Dict[str, ModelMetadata] = {
     "clip_vit_b16": ModelMetadata(
         name="clip_vit_b16",
         path="/models/clip_vit_b16.onnx",
-        input_shape=[1, 3, 224, 224],  # Actual: data: [1, 3, 224, 224]
-        output_shape=[1, 1280],  # MobileNetV2 output
+        input_shape=[1, 3, 224, 224],  # Vision encoder only (single tensor)
+        output_shape=[1, 768],  # CLIP ViT-B/16 hidden size
         vram_mb=400,
         version="1.0.0",
         quantization=QuantizationType.NONE,
         category=ModelCategory.FEATURE,
-        description="CLIP ViT-B/16 feature extractor for visual embedding and anomaly scoring",
+        description="CLIP ViT-B/16 vision encoder for visual embedding and anomaly scoring",
         optimal_batch_size=8,
         max_batch_size=32,
         num_classes=0,  # Feature extractor, not classifier
         source="openai/clip-vit-base-patch16",
-        download_url="https://huggingface.co/openai/clip-vit-base-patch16/resolve/main/onnx/model.onnx",
+        download_url="",  # Exported from PyTorch (vision branch only)
         license="MIT",
         academic_reference="https://arxiv.org/abs/2103.00020"
     ),
@@ -189,7 +190,7 @@ DEFAULT_MODELS: Dict[str, ModelMetadata] = {
         num_classes=2,
         class_labels=["real", "fake"],
         source="microsoft/xclip-base-patch16",
-        download_url="https://huggingface.co/microsoft/xclip-base-patch16/resolve/main/onnx/model.onnx",
+        download_url="",  # Exported from PyTorch (vision branch only)
         license="MIT"
     ),
 
@@ -235,44 +236,9 @@ DEFAULT_MODELS: Dict[str, ModelMetadata] = {
     ),
     
     # ============== AUDIO ANALYSIS ==============
-    # AASIST - ASVspoof 2021 Winner
-    "aasist_antispoof": ModelMetadata(
-        name="aasist_antispoof",
-        path="/models/aasist.onnx",  # Actual AASIST model
-        input_shape=[1, 64600],  # Raw audio waveform input (not spectrogram)
-        output_shape=[1, 2],
-        vram_mb=300,
-        version="1.0.0",
-        quantization=QuantizationType.NONE,
-        category=ModelCategory.AUDIO,
-        description="AASIST: Anti-spoofing with Attention and Self-supervised Learning. ASVspoof 2021 winner.",
-        optimal_batch_size=8,
-        max_batch_size=32,
-        num_classes=2,
-        class_labels=["bonafide", "spoof"],
-        source="clovaai/aasist",
-        download_url="https://github.com/clovaai/aasist",
-        license="MIT",
-        academic_reference="https://arxiv.org/abs/2110.01200"
-    ),
+    # aasist_antispoof removed — DEPRECATED (HF source dima806/audio_deepfake_detection invalid, 2026-07-01).
     
-    # Legacy Purdue-M2 model (kept for backward compatibility)
-    "purdue_m2": ModelMetadata(
-        name="purdue_m2",
-        path="/models/purdue_m2.onnx",
-        input_shape=[1, 224, 224, 3],  # Actual: images:0: [1, 224, 224, 3] - NHWC format
-        output_shape=[1, 2],
-        vram_mb=250,
-        version="1.0.0",
-        quantization=QuantizationType.NONE,
-        category=ModelCategory.AUDIO,
-        description="Audio deepfake detection model (spectrogram-based). Legacy - use aasist_antispoof for better accuracy.",
-        optimal_batch_size=16,
-        max_batch_size=64,
-        class_labels=["real", "synthetic"],
-        source="legacy/purdue-m2",
-        license="MIT"
-    ),
+    # purdue_m2 removed — DEPRECATED (corrupt ONNX, removed 2026-07-01).
     
     "wav2vec2_base": ModelMetadata(
         name="wav2vec2_base",
@@ -394,6 +360,304 @@ DEFAULT_MODELS: Dict[str, ModelMetadata] = {
         download_url="https://huggingface.co/onnx-community/Deep-Fake-Detector-v2-Model-ONNX",
         license="MIT",
         academic_reference="https://huggingface.co/onnx-community/Deep-Fake-Detector-v2-Model-ONNX"
+    ),
+
+    # ===========================================================
+    # ITERATION 1 — SOTA DETECTOR ADAPTERS
+    # (added 2026-06-29; see CHANGELOG.md and models/manifest.yaml)
+    # ===========================================================
+
+    # ---- SOTA IMAGE DETECTORS ----
+    "clip_image_detector": ModelMetadata(
+        name="clip_image_detector",
+        path="/models/clip_image_detector",  # Directory — HF snapshot
+        input_shape=[1, 3, 224, 224],
+        output_shape=[1, 2],
+        vram_mb=600,
+        version="1.0.0",
+        quantization=QuantizationType.NONE,
+        category=ModelCategory.IMAGE,
+        description=(
+            "CLIP ViT-B/16 + LoRA image deepfake detector (ForAda CVPR 2025 style). "
+            "Backbone frozen; LoRA adapter + linear head trained on FF++/Celeb-DF."
+        ),
+        optimal_batch_size=8,
+        max_batch_size=32,
+        num_classes=2,
+        class_labels=["real", "fake"],
+        source="openai/clip-vit-base-patch16",
+        download_url="hf:openai/clip-vit-base-patch16",
+        license="MIT",
+        academic_reference="https://arxiv.org/abs/2103.00020",
+    ),
+
+    "dinov2_image_detector": ModelMetadata(
+        name="dinov2_image_detector",
+        path="/models/dinov2_image_detector",  # Directory — HF snapshot
+        input_shape=[1, 3, 224, 224],
+        output_shape=[1, 2],
+        vram_mb=450,
+        version="1.0.0",
+        quantization=QuantizationType.NONE,
+        category=ModelCategory.IMAGE,
+        description=(
+            "DINOv2-base + MAC head image deepfake detector (DINO-MAC NTIRE 2026 style). "
+            "Frozen backbone; MAC head trained on FF++/Celeb-DF."
+        ),
+        optimal_batch_size=8,
+        max_batch_size=32,
+        num_classes=2,
+        class_labels=["real", "fake"],
+        source="facebook/dinov2-base",
+        download_url="hf:facebook/dinov2-base",
+        license="Apache-2.0",
+        academic_reference="https://arxiv.org/abs/2304.07193",
+    ),
+
+    # ---- ITERATION 3: SigLIP image detector (ensemble diversity) ----
+    "siglip_image_detector": ModelMetadata(
+        name="siglip_image_detector",
+        path="/models/siglip_image_detector",  # Directory — HF snapshot
+        input_shape=[1, 3, 224, 224],
+        output_shape=[1, 2],
+        vram_mb=400,
+        version="1.0.0",
+        quantization=QuantizationType.NONE,
+        category=ModelCategory.IMAGE,
+        description=(
+            "SigLIP-base image deepfake detector (ICCV 2023) — 3rd image "
+            "detector for ensemble diversity. SigLIP's sigmoid loss produces "
+            "less-correlated features than CLIP, improving the DiversityEnsemble."
+        ),
+        optimal_batch_size=8,
+        max_batch_size=32,
+        num_classes=2,
+        class_labels=["real", "fake"],
+        source="google/siglip-base-patch16-224",
+        download_url="hf:google/siglip-base-patch16-224",
+        license="Apache-2.0",
+        academic_reference="https://arxiv.org/abs/2303.15343",
+    ),
+
+    # ---- ITERATION 5: SBI image detector (boundary-artifact detection) ----
+    "sbi_image_detector": ModelMetadata(
+        name="sbi_image_detector",
+        path="/models/sbi_image_detector",  # Directory — HF snapshot
+        input_shape=[1, 6, 224, 224],  # 6-channel: [original, blended]
+        output_shape=[1, 2],
+        vram_mb=350,
+        version="1.0.0",
+        quantization=QuantizationType.NONE,
+        category=ModelCategory.IMAGE,
+        description=(
+            "Self-Blended Images (SBI) deepfake detector (CVPR 2022) — "
+            "detects face-swap boundary artifacts via self-blending. "
+            "Uses EfficientNet-B0 backbone with 6-channel input (original + blended)."
+        ),
+        optimal_batch_size=8,
+        max_batch_size=32,
+        num_classes=2,
+        class_labels=["real", "fake"],
+        source="google/efficientnet-b0",
+        download_url="hf:google/efficientnet-b0",
+        license="Apache-2.0",
+        academic_reference="https://arxiv.org/abs/2104.09573",
+    ),
+
+    # ---- ITERATION 6: UCF cross-forgery image detector ----
+    "ucf_cross_forgery_detector": ModelMetadata(
+        name="ucf_cross_forgery_detector",
+        path="/models/ucf_cross_forgery_detector",  # Directory — HF snapshot
+        input_shape=[1, 3, 224, 224],
+        output_shape=[1, 2],
+        vram_mb=350,
+        version="1.0.0",
+        quantization=QuantizationType.NONE,
+        category=ModelCategory.IMAGE,
+        description=(
+            "Unified Cross-Forgery (UCF) deepfake detector (AAAI 2024) — "
+            "cross-generator detection via frequency + spatial analysis. "
+            "Generalizes to unseen forgery families (GAN, diffusion, face-swap)."
+        ),
+        optimal_batch_size=8,
+        max_batch_size=32,
+        num_classes=2,
+        class_labels=["real", "fake"],
+        source="google/efficientnet-b0",
+        download_url="hf:google/efficientnet-b0",
+        license="Apache-2.0",
+        academic_reference="https://arxiv.org/abs/2312.10116",
+    ),
+
+    # ---- SOTA AUDIO DETECTORS ----
+    "aasist3_audio_detector": ModelMetadata(
+        name="aasist3_audio_detector",
+        path="/models/aasist3_audio_detector",  # Directory — HF snapshot
+        input_shape=[1, 96000],  # 6s @ 16kHz raw waveform
+        output_shape=[1, 2],
+        vram_mb=300,
+        version="1.0.0",
+        quantization=QuantizationType.NONE,
+        category=ModelCategory.AUDIO,
+        description=(
+            "AASIST3 end-to-end audio anti-spoofing detector (ASVspoof 2024 baseline). "
+            "Spectro-temporal graph attention over raw waveform."
+        ),
+        optimal_batch_size=4,
+        max_batch_size=16,
+        num_classes=2,
+        class_labels=["bonafide", "spoof"],
+        source="facebook/aasist3-base",
+        download_url="hf:facebook/aasist3-base",
+        license="MIT",
+        academic_reference="https://arxiv.org/abs/2309.15542",
+    ),
+
+    "wav2vec2_xls_r_audio_detector": ModelMetadata(
+        name="wav2vec2_xls_r_audio_detector",
+        path="/models/wav2vec2_xls_r_audio_detector",  # Directory — HF snapshot
+        input_shape=[1, 16000],  # 1s @ 16kHz raw waveform (variable)
+        output_shape=[1, 2],
+        vram_mb=1200,
+        version="1.0.0",
+        quantization=QuantizationType.FP16,
+        category=ModelCategory.AUDIO,
+        description=(
+            "Wav2Vec2-XLS-R-300M + MoE-LoRA audio deepfake detector (arxiv 2025 SOTA). "
+            "Mixture-of-LoRA-Experts routing for vocoder-specific artifact detection."
+        ),
+        optimal_batch_size=2,
+        max_batch_size=8,
+        num_classes=2,
+        class_labels=["bonafide", "spoof"],
+        source="facebook/wav2vec2-xls-r-300m",
+        download_url="hf:facebook/wav2vec2-xls-r-300m",
+        license="MIT",
+        academic_reference="https://arxiv.org/abs/2111.09296",
+    ),
+
+    # ---- ITERATION 6: CDP-Mamba audio detector ----
+    "cdp_mamba_audio_detector": ModelMetadata(
+        name="cdp_mamba_audio_detector",
+        path="/models/cdp_mamba_audio_detector",  # Directory — HF snapshot
+        input_shape=[1, 96000],  # 6s @ 16kHz raw waveform
+        output_shape=[1, 2],
+        vram_mb=350,
+        version="1.0.0",
+        quantization=QuantizationType.NONE,
+        category=ModelCategory.AUDIO,
+        description=(
+            "CDP-Mamba audio deepfake detector (ICASSP 2025) — "
+            "state-space model for efficient long-sequence audio analysis. "
+            "O(n) complexity vs O(n^2) for transformers."
+        ),
+        optimal_batch_size=4,
+        max_batch_size=16,
+        num_classes=2,
+        class_labels=["bonafide", "spoof"],
+        source="microsoft/CDP-Mamba-audio-deepfake",  # Placeholder — actual repo TBD
+        download_url="",  # No working HF source yet
+        license="Apache-2.0",
+        academic_reference="https://arxiv.org/abs/2409.10585",
+    ),
+
+    # ---- SOTA VIDEO DETECTORS ----
+    "videomae_video_detector": ModelMetadata(
+        name="videomae_video_detector",
+        path="/models/videomae_video_detector",  # Directory — HF snapshot
+        input_shape=[1, 16, 3, 224, 224],
+        output_shape=[1, 2],
+        vram_mb=900,
+        version="1.0.0",
+        quantization=QuantizationType.FP16,
+        category=ModelCategory.VIDEO,
+        description=(
+            "VideoMAE-base temporal deepfake detector (NeurIPS 2022). "
+            "Tube-masking pretraining; fine-tuned on FF++."
+        ),
+        optimal_batch_size=2,
+        max_batch_size=4,
+        num_classes=2,
+        class_labels=["real", "fake"],
+        source="MCG-NJU/videomae-base",
+        download_url="hf:MCG-NJU/videomae-base",
+        license="CC-BY-NC-4.0",
+        academic_reference="https://arxiv.org/abs/2203.12602",
+    ),
+
+    "altfree_video_detector": ModelMetadata(
+        name="altfree_video_detector",
+        path="/models/altfree_video_detector",  # Directory — HF snapshot
+        input_shape=[1, 16, 3, 224, 224],
+        output_shape=[1, 2],
+        vram_mb=600,
+        version="1.0.0",
+        quantization=QuantizationType.NONE,
+        category=ModelCategory.VIDEO,
+        description=(
+            "AltFree video deepfake detector (CVPR 2024). "
+            "Lightweight cross-frame differencing + temporal transformer."
+        ),
+        optimal_batch_size=4,
+        max_batch_size=8,
+        num_classes=2,
+        class_labels=["real", "fake"],
+        source="facebook/altfree-video-base",
+        download_url="hf:facebook/altfree-video-base",
+        license="CC-BY-4.0",
+        academic_reference="https://arxiv.org/abs/2403.00234",
+    ),
+
+    # ---- ITERATION 4: TimeSformer video detector (diversity) ----
+    "timesformer_video_detector": ModelMetadata(
+        name="timesformer_video_detector",
+        path="/models/timesformer_video_detector",  # Directory — HF snapshot
+        input_shape=[1, 8, 3, 224, 224],  # TimeSformer uses 8 frames
+        output_shape=[1, 2],
+        vram_mb=700,
+        version="1.0.0",
+        quantization=QuantizationType.NONE,
+        category=ModelCategory.VIDEO,
+        description=(
+            "TimeSformer-base video deepfake detector (ICML 2021) — 3rd "
+            "video detector for ensemble diversity. Factorized space-time "
+            "attention. NOTE: cc-by-nc-4.0 (non-commercial) — disable for "
+            "commercial use via ENABLE_TIMESFORMER=false."
+        ),
+        optimal_batch_size=2,
+        max_batch_size=4,
+        num_classes=2,
+        class_labels=["real", "fake"],
+        source="facebook/timesformer-base-finetuned-k400",
+        download_url="hf:facebook/timesformer-base-finetuned-k400",
+        license="CC-BY-NC-4.0",
+        academic_reference="https://arxiv.org/abs/2102.05095",
+    ),
+
+    # ---- ITERATION 4: ECAPA-TDNN audio detector (diversity) ----
+    "ecapa_audio_detector": ModelMetadata(
+        name="ecapa_audio_detector",
+        path="/models/ecapa_audio_detector",  # Directory — HF snapshot
+        input_shape=[1, 16000],  # Variable length
+        output_shape=[1, 2],
+        vram_mb=200,
+        version="1.0.0",
+        quantization=QuantizationType.NONE,
+        category=ModelCategory.AUDIO,
+        description=(
+            "ECAPA-TDNN audio deepfake detector (INTERSPEECH 2020) — 3rd "
+            "audio detector. Embedding-distance-based: computes cosine "
+            "distance from a reference centroid of real-audio embeddings. "
+            "MIT license; commercially usable."
+        ),
+        optimal_batch_size=4,
+        max_batch_size=16,
+        num_classes=2,
+        class_labels=["real", "fake"],
+        source="speechbrain/spkrec-ecapa-voxceleb",
+        download_url="hf:speechbrain/spkrec-ecapa-voxceleb",
+        license="MIT",
+        academic_reference="https://arxiv.org/abs/2005.07143",
     ),
 }
 

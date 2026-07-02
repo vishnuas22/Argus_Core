@@ -604,6 +604,27 @@ class ModalityResult(BaseSchema):
     score: float = Field(..., ge=0, le=1, description="Detection score for this modality")
     confidence: float = Field(..., ge=0, le=1, description="Model confidence")
     details: Dict[str, Any] = Field(default_factory=dict)
+    # Iteration 4: XAI attribution fields (additive, all optional)
+    # These are populated when config.enable_xai_attribution_output is True.
+    xai_attribution: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "XAI attribution data for the frontend. Contains: "
+            "heatmap (HxW float32 in [0,1]), method (str), "
+            "most_influential_region (str, image only), "
+            "most_influential_band (Hz tuple, audio only), "
+            "most_influential_window (frame indices, video only), "
+            "explanation (str, human-readable)."
+        ),
+    )
+    conformal_prediction_set: Optional[List[int]] = Field(
+        default=None,
+        description="Conformal RAPS prediction set (e.g. [0]=real, [1]=fake, [0,1]=ambiguous)."
+    )
+    route_to_human: bool = Field(
+        default=False,
+        description="True if conformal/adversarial-gate flagged this input for human review."
+    )
 
 
 class AggregatedResult(BaseSchema):

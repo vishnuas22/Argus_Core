@@ -1,0 +1,118 @@
+{
+  "annotations": { "list": [] },
+  "description": "Argus Core Deepfake Detection Platform — observability dashboard",
+  "editable": true,
+  "graphTooltip": 0,
+  "panels": [
+    {
+      "title": "Inference Rate (per modality)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "rate(argus_inference_total[5m])", "legendFormat": "{{modality}} / {{verdict}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Inference Latency (p50, p95, p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(argus_inference_latency_seconds_bucket[5m]))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, rate(argus_inference_latency_seconds_bucket[5m]))", "legendFormat": "p95", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, rate(argus_inference_latency_seconds_bucket[5m]))", "legendFormat": "p99", "refId": "C" }
+      ]
+    },
+    {
+      "title": "Drift Score (PSI + MMD)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "argus_drift_psi", "legendFormat": "PSI {{modality}}", "refId": "A" },
+        { "expr": "argus_drift_mmd", "legendFormat": "MMD {{modality}}", "refId": "B" }
+      ]
+    },
+    {
+      "title": "Calibration ECE",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "argus_calibration_ece", "legendFormat": "{{modality}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Drift Severity",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "argus_drift_severity", "legendFormat": "{{modality}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Retrain Cycles (24h)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "increase(argus_retrain_total[24h])", "legendFormat": "{{modality}} / {{status}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "A/B Test Accuracy",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "argus_ab_test_accuracy", "legendFormat": "{{modality}} candidate={{is_candidate}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Feedback Buffer Size",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "argus_feedback_buffer_size", "legendFormat": "{{modality}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Conformal Route-to-Human (1h)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "increase(argus_conformal_route_to_human_total[1h])", "legendFormat": "{{modality}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Adversarial Flags (1h)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "increase(argus_adversarial_flagged_total[1h])", "legendFormat": "{{defense}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Certified Robustness Radius (p50)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 32 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(argus_certified_robustness_radius_bucket[5m]))", "legendFormat": "p50 {{modality}}", "refId": "A" }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["argus", "deepfake", "ml-ops"],
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "Argus Core — Platform Observability",
+  "uid": "argus-core",
+  "version": 1
+}

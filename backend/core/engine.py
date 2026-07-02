@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 from dataclasses import dataclass, field
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
+import os
 
 from config import config
 from models.manager import ModelManager, get_model_manager
@@ -133,7 +134,8 @@ class InferenceEngine:
         self.default_batch_size = default_batch_size
         
         # Thread pool for CPU-bound preprocessing
-        self._executor = ThreadPoolExecutor(max_workers=4)
+        # ONNX intra-op threads already configured to 4; limit pool to avoid oversubscription
+        self._executor = ThreadPoolExecutor(max_workers=min(os.cpu_count() or 4, 4))
         
         # Inference statistics
         self._stats = {
@@ -245,8 +247,8 @@ class InferenceEngine:
             # Concatenate all outputs
             predictions = np.concatenate(all_outputs, axis=0)
             
-            # DEBUG: Log raw model outputs for diagnosis
-            logger.info(
+            # Log raw model outputs for diagnosis
+            logger.debug(
                 f"Model {model_name} raw output: shape={predictions.shape}, "
                 f"min={predictions.min():.4f}, max={predictions.max():.4f}, "
                 f"mean={predictions.mean():.4f}, values={predictions[0][:5] if len(predictions[0]) > 5 else predictions[0]}"
@@ -261,15 +263,15 @@ class InferenceEngine:
                 
                 if is_probability:
                     class_probabilities = predictions
-                    logger.info(f"Using raw as probabilities: {class_probabilities[0]}")
+                    logger.debug(f"Using raw as probabilities: {class_probabilities[0]}")
                 else:
                     # Apply softmax to convert logits to probabilities
                     class_probabilities = self._softmax(predictions)
-                    logger.info(f"Applied softmax: logits={predictions[0]}, probs={class_probabilities[0]}")
+                    logger.debug(f"Applied softmax: logits={predictions[0]}, probs={class_probabilities[0]}")
                 
                 # Confidence is max probability
                 confidence = float(np.max(class_probabilities))
-                logger.info(f"Confidence: {confidence:.4f}, predicted class: {np.argmax(class_probabilities[0])}")
+                logger.debug(f"Confidence: {confidence:.4f}, predicted class: {np.argmax(class_probabilities[0])}")
             else:
                 class_probabilities = None
                 confidence = float(np.mean(np.abs(predictions)))
@@ -310,11 +312,13 @@ class InferenceEngine:
         except ImportError as e:
             latency_seconds = (time.time() - start_time)
             record_model_inference(model_name, False, latency_seconds)
-            raise InferenceError(model_name, f"Missing dependencies: {e}")
+            logger.error(f"Missing dependencies for {model_name}: {e}")
+            raise InferenceError(model_name, "Missing model dependencies")
         except RuntimeError as e:
             latency_seconds = (time.time() - start_time)
             record_model_inference(model_name, False, latency_seconds)
-            raise InferenceError(model_name, f"ONNX runtime error: {e}")
+            logger.error(f"ONNX runtime error for {model_name}: {e}")
+            raise InferenceError(model_name, "ONNX runtime error")
         except ValueError as e:
             latency_seconds = (time.time() - start_time)
             record_model_inference(model_name, False, latency_seconds)
@@ -323,7 +327,7 @@ class InferenceEngine:
             latency_seconds = (time.time() - start_time)
             record_model_inference(model_name, False, latency_seconds)
             logger.error(f"Inference failed for {model_name}: {type(e).__name__}: {e}")
-            raise InferenceError(model_name, f"Unexpected error: {type(e).__name__}: {e}")
+            raise InferenceError(model_name, "Inference failed")
     
     async def infer_batch(
         self,
@@ -362,9 +366,15 @@ class InferenceEngine:
             
             # Split batch result into individual results
             for j in range(result.predictions.shape[0]):
+                # Recompute per-item confidence from class probabilities
+                if result.class_probabilities is not None:
+                    item_probs = result.class_probabilities[j:j+1]
+                    item_conf = float(np.max(item_probs))
+                else:
+                    item_conf = result.confidence
                 individual = InferenceResult(
                     predictions=result.predictions[j:j+1],
-                    confidence=result.confidence,
+                    confidence=item_conf,
                     class_probabilities=(
                         result.class_probabilities[j:j+1]
                         if result.class_probabilities is not None else None
@@ -506,18 +516,24 @@ class InferenceEngine:
             session = await self.model_manager.get_model(model_name)
             
             # Prepare inputs with correct dtypes
+            # NOTE: wav2vec2_antispoof expects attention_mask as int32.
+            # Only normalize non-standard int types; leave float types intact.
             feed_dict = {}
             for inp in session.get_inputs():
                 name = inp.name
                 if name in inputs:
                     arr = inputs[name]
-                    if arr.dtype != np.int64 and arr.dtype != np.int32:
+                    if np.issubdtype(arr.dtype, np.integer) and arr.dtype not in (np.int32, np.int64):
                         arr = arr.astype(np.int64)
                     feed_dict[name] = arr
             
-            model_lock = self._get_model_lock(model_name)
-            with model_lock:
-                outputs = session.run(None, feed_dict)
+            model_lock = await self._get_model_lock(model_name)
+            async with model_lock:
+                loop = asyncio.get_running_loop()
+                outputs = await loop.run_in_executor(
+                    self._executor,
+                    lambda: session.run(None, feed_dict)
+                )
             predictions = outputs[0]
             
             # Compute confidence and probabilities

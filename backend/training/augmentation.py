@@ -193,7 +193,7 @@ class DegradationPipeline:
 
         if self._controller is not None:
             biases = self._controller.get_degradation_biases()
-            type_to_bias = dict(zip(self.DEGRADATION_TYPES, biases))
+            type_to_bias = dict(zip(self.enabled_types, biases))
             weights = np.array([max(type_to_bias.get(t, 1.0), 0.01) for t in self.enabled_types])
             weights = weights / weights.sum()
             indices = list(np.random.choice(len(self.enabled_types), size=k, replace=False, p=weights))

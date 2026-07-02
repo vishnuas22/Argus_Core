@@ -14,7 +14,7 @@ WORKDIR /app
 # Copy package files
 COPY package.json yarn.lock ./
 
-# Install dependencies
+# Install dependencies (keep lockfile for Next.js build step)
 RUN yarn install --production=false
 
 # ============================================
@@ -30,7 +30,8 @@ COPY . .
 
 # Set environment variables for build
 ENV NEXT_TELEMETRY_DISABLED=1 \
-    NODE_ENV=production
+    NODE_ENV=production \
+    NEXT_PATCH_LOCKFILE=false
 
 # Build the application
 RUN yarn build

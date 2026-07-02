@@ -164,16 +164,16 @@ class TestModelsEndpoint:
 class TestStatsEndpoint:
     """Test /api/v1/stats statistics."""
 
-    def test_stats_structure(self, client: TestClient) -> None:
-        response = client.get("/api/v1/stats")
+    def test_stats_structure(self, client: TestClient, auth_headers: Dict[str, str]) -> None:
+        response = client.get("/api/v1/stats", headers=auth_headers)
         assert response.status_code == 200
         data = response.json()
         assert "total" in data
         assert "by_status" in data
         assert "by_verdict" in data
 
-    def test_stats_total_is_integer(self, client: TestClient) -> None:
-        response = client.get("/api/v1/stats")
+    def test_stats_total_is_integer(self, client: TestClient, auth_headers: Dict[str, str]) -> None:
+        response = client.get("/api/v1/stats", headers=auth_headers)
         data = response.json()
         assert isinstance(data["total"], int)
         assert data["total"] >= 0
@@ -406,7 +406,6 @@ class TestXAIEndpoints:
         assert "image_xai" in data
         assert "video_xai" in data
         assert "audio_xai" in data
-        assert "text_xai" in data
 
     def test_xai_heatmaps_nonexistent(self, client: TestClient, auth_headers: Dict[str, str]) -> None:
         fake_id = str(uuid.uuid4())

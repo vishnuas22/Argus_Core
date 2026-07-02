@@ -84,8 +84,15 @@ def detect_cuda() -> Optional[HardwareInfo]:
                 memory_mb = int(float(memory_parts[0]))
                 if "GiB" in memory_str or "GB" in memory_str:
                     memory_mb = int(memory_mb * 1024)
-        except (ValueError, IndexError):
-            memory_mb = 4096  # Default assumption
+        except (ValueError, IndexError) as e:
+            # M6 fix: conservative fallback + loud warning.
+            # Previously defaulted to 4GB silently, which over-allocates
+            # on 2GB GPUs (OOM) and under-allocates on 16GB GPUs (starved).
+            logger.warning(
+                "Could not parse nvidia-smi memory output '%s': %s; "
+                "assuming conservative 2GB VRAM limit", memory_str, e
+            )
+            memory_mb = 2048  # conservative fallback
         
         # Check ONNX Runtime CUDA provider
         try:

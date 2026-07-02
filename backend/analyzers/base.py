@@ -11,7 +11,7 @@ This file provides:
 - Input validation methods
 - Logging and metrics integration
 
-All modality analyzers (video, audio, image, text, metadata) inherit from this.
+All modality analyzers (video, audio, image, metadata) inherit from this.
 
 Integration:
 - Imports: interfaces/analyzer.py, schemas/internal.py

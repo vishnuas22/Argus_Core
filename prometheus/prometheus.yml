@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'argus-backend'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['backend:8000']
+        labels:
+          service: 'argus-backend'
+
+  # celery-worker metrics served via backend (celery-exporter not available)
+  # - job_name: 'argus-celery'
+  #   metrics_path: /metrics
+  #   static_configs:
+  #     - targets: ['celery-worker:8000']
+  #       labels:
+  #         service: 'argus-celery'

@@ -29,7 +29,6 @@ import {
   Play,
   Pause,
   Volume2,
-  FileText,
   Info,
   ExternalLink,
   Download,
@@ -110,8 +109,6 @@ function getEvidenceTypeIcon(type: VisualEvidence['artifact_type']): React.Eleme
       return ImageIcon;
     case 'spectrogram':
       return Volume2;
-    case 'token_highlight':
-      return FileText;
     case 'attention_map':
       return ImageIcon;
     case 'overlay':
@@ -134,8 +131,6 @@ function getEvidenceTypeLabel(type: VisualEvidence['artifact_type']): string {
       return 'GradCAM Heatmap';
     case 'spectrogram':
       return 'Spectrogram';
-    case 'token_highlight':
-      return 'Token Highlight';
     case 'attention_map':
       return 'Attention Map';
     case 'overlay':
@@ -158,8 +153,6 @@ function getEvidenceTypeColor(type: VisualEvidence['artifact_type']): string {
       return 'bg-red-500/10 text-red-500 border-red-500/20';
     case 'spectrogram':
       return 'bg-purple-500/10 text-purple-500 border-purple-500/20';
-    case 'token_highlight':
-      return 'bg-blue-500/10 text-blue-500 border-blue-500/20';
     case 'attention_map':
       return 'bg-green-500/10 text-green-500 border-green-500/20';
     case 'overlay':

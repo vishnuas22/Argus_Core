@@ -58,3 +58,4 @@ __all__ = [
     "get_audio_analyzer",
     "get_metadata_analyzer",
 ]
+

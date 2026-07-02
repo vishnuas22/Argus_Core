@@ -14,7 +14,7 @@ This enables anonymous usage while maintaining JWT security.
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Header
 from pydantic import BaseModel, Field
 
 from config import config
@@ -59,7 +59,7 @@ async def anonymous_login() -> AuthToken:
         import uuid
         
         user_id = f"guest-{uuid.uuid4().hex[:12]}"
-        expires_in = 24 * 60 * 60  # 24 hours
+        expires_in = config.jwt_expire_minutes * 60
         
         payload = {
             "sub": user_id,
@@ -100,33 +100,50 @@ async def anonymous_login() -> AuthToken:
     "/refresh",
     response_model=AuthToken,
     summary="Refresh JWT token",
-    description="Refresh an existing JWT token before expiration.",
+    description="Refresh an existing JWT token before expiration. "
+                "Pass the current token via the Authorization: Bearer <token> header.",
 )
 async def refresh_token(
-    current_token: str = "",
+    # H1 fix: read token from Authorization header, NOT query param.
+    # This prevents JWT leakage into URL/proxy logs.
+    authorization: str = Header(
+        ...,
+        description="Bearer <current_token>",
+    ),
 ) -> AuthToken:
     """
     Refresh an existing JWT token.
-    
-    Validates the current token and generates a new one with
-    extended expiration. Requires a valid existing token.
-    
+
+    Validates the current token from the Authorization header and
+    generates a new one with extended expiration.
+
     Args:
-        current_token: Current JWT token from Authorization header
-        
+        authorization: "Bearer <current_token>" header
+
     Returns:
         AuthToken with new access_token
     """
     try:
         import jwt
         import uuid
-        
+
+        # H1 fix: parse Bearer token from Authorization header
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={
+                    "error_code": "INVALID_AUTH_HEADER",
+                    "message": "Authorization header must be 'Bearer <token>'",
+                },
+            )
+        current_token = authorization.split(" ", 1)[1].strip()
+
         if not current_token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={"error_code": "TOKEN_REQUIRED", "message": "Current token required"},
             )
-        
+
         # Decode current token
         payload = jwt.decode(
             current_token,
@@ -138,7 +155,7 @@ async def refresh_token(
         email = payload.get("email", f"{user_id}@argus.dev")
         roles = payload.get("roles", ["user"])
         
-        expires_in = 24 * 60 * 60  # 24 hours
+        expires_in = config.jwt_expire_minutes * 60
         
         new_payload = {
             "sub": user_id,

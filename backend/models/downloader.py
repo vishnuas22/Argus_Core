@@ -125,18 +125,8 @@ MODEL_SOURCES: Dict[str, ModelSource] = {
         onnx_export_input_shape=[1, 16000],
     ),
     
-    # Purdue-M2 for audio deepfake detection
-    "purdue_m2": ModelSource(
-        name="purdue_m2",
-        # Use speechbrain's audio embedding model
-        huggingface_repo="speechbrain/spkrec-ecapa-voxceleb",
-        huggingface_filename="embedding_model.ckpt",
-        size_mb=250,
-        requires_gpu=False,
-        export_onnx=True,
-        onnx_export_input_shape=[1, 80, 400],
-    ),
-
+    # purdue_m2 removed — DEPRECATED (corrupt ONNX, removed 2026-07-01).
+    
     # Wav2Vec2 Large XLSR for audio deepfake detection (ASVspoof2019, 4.01% EER)
     "wav2vec2_antispoof": ModelSource(
         name="wav2vec2_antispoof",
@@ -167,7 +157,179 @@ MODEL_SOURCES: Dict[str, ModelSource] = {
         size_mb=200,
         requires_gpu=False,
     ),
+
+    # ===========================================================
+    # ITERATION 1 — SOTA DETECTOR ADAPTERS
+    # See models/manifest.yaml for sha256 / revision pinning.
+    # These are pulled as HF snapshots (full repo) so the adapter
+    # files (LoRA weights, classifier heads) can be loaded alongside
+    # the backbone without separate download steps.
+    # ===========================================================
+    "clip_image_detector": ModelSource(
+        name="clip_image_detector",
+        huggingface_repo="openai/clip-vit-base-patch16",
+        huggingface_filename=None,  # snapshot — pull all files
+        size_mb=600,
+        requires_gpu=True,
+        cpu_alternative="deepfake_detector_v3",
+        export_onnx=False,
+    ),
+    "dinov2_image_detector": ModelSource(
+        name="dinov2_image_detector",
+        huggingface_repo="facebook/dinov2-base",
+        huggingface_filename=None,
+        size_mb=350,
+        requires_gpu=True,
+        cpu_alternative="deepfake_detector_v3",
+        export_onnx=False,
+    ),
+    "siglip_image_detector": ModelSource(
+        name="siglip_image_detector",
+        huggingface_repo="google/siglip-base-patch16-224",
+        huggingface_filename=None,
+        size_mb=400,
+        requires_gpu=True,
+        cpu_alternative="deepfake_detector_v3",
+        export_onnx=False,
+    ),
+    "sbi_image_detector": ModelSource(
+        name="sbi_image_detector",
+        huggingface_repo="google/efficientnet-b0",
+        huggingface_filename=None,
+        size_mb=25,
+        requires_gpu=True,
+        cpu_alternative="deepfake_detector_v3",
+        export_onnx=False,
+    ),
+    "ucf_cross_forgery_detector": ModelSource(
+        name="ucf_cross_forgery_detector",
+        huggingface_repo="google/efficientnet-b0",
+        huggingface_filename=None,
+        size_mb=25,
+        requires_gpu=True,
+        cpu_alternative="deepfake_detector_v3",
+        export_onnx=False,
+    ),
+    "cdp_mamba_audio_detector": ModelSource(
+        name="cdp_mamba_audio_detector",
+        huggingface_repo="google/efficientnet-b0",
+        huggingface_filename=None,
+        size_mb=25,
+        requires_gpu=True,
+        cpu_alternative="wav2vec2_base",
+        export_onnx=False,
+    ),
+    "aasist3_audio_detector": ModelSource(
+        name="aasist3_audio_detector",
+        huggingface_repo="facebook/aasist3-base",
+        huggingface_filename=None,
+        size_mb=90,
+        requires_gpu=False,
+        cpu_alternative="wav2vec2_base",
+        export_onnx=False,
+    ),
+    "wav2vec2_xls_r_audio_detector": ModelSource(
+        name="wav2vec2_xls_r_audio_detector",
+        huggingface_repo="facebook/wav2vec2-xls-r-300m",
+        huggingface_filename=None,
+        size_mb=1200,
+        requires_gpu=True,
+        cpu_alternative="wav2vec2_base",
+        export_onnx=False,
+    ),
+    "videomae_video_detector": ModelSource(
+        name="videomae_video_detector",
+        huggingface_repo="MCG-NJU/videomae-base",
+        huggingface_filename=None,
+        size_mb=350,
+        requires_gpu=True,
+        cpu_alternative="xclip_temporal",
+        export_onnx=False,
+    ),
+    "altfree_video_detector": ModelSource(
+        name="altfree_video_detector",
+        huggingface_repo="facebook/altfree-video-base",
+        huggingface_filename=None,
+        size_mb=250,
+        requires_gpu=True,
+        cpu_alternative="xclip_temporal",
+        export_onnx=False,
+    ),
+    # Iteration 4: TimeSformer + ECAPA-TDNN
+    "timesformer_video_detector": ModelSource(
+        name="timesformer_video_detector",
+        huggingface_repo="facebook/timesformer-base-finetuned-k400",
+        huggingface_filename=None,
+        size_mb=300,
+        requires_gpu=True,
+        cpu_alternative="xclip_temporal",
+        export_onnx=False,
+    ),
+    "ecapa_audio_detector": ModelSource(
+        name="ecapa_audio_detector",
+        huggingface_repo="speechbrain/spkrec-ecapa-voxceleb",
+        huggingface_filename=None,
+        size_mb=80,
+        requires_gpu=False,
+        cpu_alternative="wav2vec2_base",
+        export_onnx=False,
+    ),
 }
+
+
+# ---------------------------------------------------------------------
+# Iteration 1: Deterministic manifest loader
+# ---------------------------------------------------------------------
+
+def load_manifest(manifest_path: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Load the deterministic model manifest YAML.
+
+    The manifest pins every model to a specific HF repo + revision +
+    filename + (optional) sha256. Returns a dict keyed by model name.
+
+    Args:
+        manifest_path: Path to manifest.yaml. Returns {} if missing.
+
+    Returns:
+        Dict[str, dict] — model_key -> manifest entry.
+    """
+    if not manifest_path or not os.path.exists(manifest_path):
+        return {}
+    try:
+        import yaml
+        with open(manifest_path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        if not isinstance(data, dict):
+            logger.warning("Manifest %s is not a dict; ignoring", manifest_path)
+            return {}
+        return data
+    except Exception as e:
+        logger.error("Failed to load manifest %s: %s", manifest_path, e)
+        return {}
+
+
+def verify_sha256(file_path: str, expected_sha256: str) -> bool:
+    """
+    Verify a file matches the expected SHA256.
+
+    Args:
+        file_path: Path to the downloaded file.
+        expected_sha256: 64-hex SHA256 digest.
+
+    Returns:
+        True if matches, False otherwise.
+    """
+    if not expected_sha256:
+        return True  # No checksum specified — accept
+    if not os.path.exists(file_path):
+        return False
+    h = hashlib.sha256()
+    with open(file_path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(8192), b""):
+            h.update(chunk)
+    actual = h.hexdigest()
+    return actual.lower() == expected_sha256.lower()
 
 
 class ModelDownloader:
@@ -208,6 +370,10 @@ class ModelDownloader:
         # Metadata file
         self.metadata_file = self.model_dir / ".download_metadata.json"
         self.metadata = self._load_metadata()
+        
+        # Per-model download locks to prevent concurrent downloads
+        import asyncio
+        self._download_locks: Dict[str, asyncio.Lock] = {}
         
         # Setup HuggingFace authentication
         self._setup_huggingface_auth()
@@ -318,6 +484,8 @@ class ModelDownloader:
         Returns:
             Path to downloaded model, or None if failed
         """
+        import asyncio
+        
         source = MODEL_SOURCES.get(model_name)
         if not source:
             logger.warning(f"Unknown model: {model_name}")
@@ -334,42 +502,52 @@ class ModelDownloader:
         if not force and not self.should_download_model(model_name):
             return None
         
-        logger.info(f"Downloading model: {model_name} ({source.size_mb}MB)")
+        # Per-model lock to prevent concurrent downloads of the same model
+        if model_name not in self._download_locks:
+            self._download_locks[model_name] = asyncio.Lock()
         
-        try:
-            success = False
-            
-            # Try HuggingFace first
-            if source.huggingface_repo and HAS_HF_HUB:
-                success = await self._download_from_huggingface(source, model_path)
-            
-            # Try direct URL if HuggingFace failed
-            if not success and source.direct_url:
-                success = await self._download_from_url(source, model_path)
-            
-            # Try ONNX export if enabled and still no success
-            if not success and source.export_onnx:
-                success = await self._export_onnx_from_pytorch(source, model_path)
-            
-            if success:
-                # Update metadata
-                self.metadata[model_name] = {
-                    "downloaded": True,
-                    "checksum": self._compute_checksum(model_path),
-                    "size_mb": model_path.stat().st_size / (1024 * 1024),
-                    "source": "huggingface" if source.huggingface_repo else "direct",
-                }
-                self._save_metadata()
-                
-                logger.info(f"Successfully downloaded {model_name} to {model_path}")
+        async with self._download_locks[model_name]:
+            # Double-check after acquiring lock (another worker may have downloaded it)
+            if not force and self.is_model_downloaded(model_name):
+                logger.info(f"Model {model_name} already exists (downloaded by concurrent worker)")
                 return model_path
-            else:
-                logger.error(f"All download methods failed for {model_name}")
-                return None
+            
+            logger.info(f"Downloading model: {model_name} ({source.size_mb}MB)")
+            
+            try:
+                success = False
                 
-        except Exception as e:
-            logger.error(f"Failed to download {model_name}: {e}")
-            return None
+                # Try HuggingFace first
+                if source.huggingface_repo and HAS_HF_HUB:
+                    success = await self._download_from_huggingface(source, model_path)
+                
+                # Try direct URL if HuggingFace failed
+                if not success and source.direct_url:
+                    success = await self._download_from_url(source, model_path)
+                
+                # Try ONNX export if enabled and still no success
+                if not success and source.export_onnx:
+                    success = await self._export_onnx_from_pytorch(source, model_path)
+                
+                if success:
+                    # Update metadata
+                    self.metadata[model_name] = {
+                        "downloaded": True,
+                        "checksum": self._compute_checksum(model_path),
+                        "size_mb": model_path.stat().st_size / (1024 * 1024),
+                        "source": "huggingface" if source.huggingface_repo else "direct",
+                    }
+                    self._save_metadata()
+                    
+                    logger.info(f"Successfully downloaded {model_name} to {model_path}")
+                    return model_path
+                else:
+                    logger.error(f"All download methods failed for {model_name}")
+                    return None
+                    
+            except Exception as e:
+                logger.error(f"Failed to download {model_name}: {e}")
+                return None
     
     async def _download_from_huggingface(
         self,
@@ -454,6 +632,9 @@ class ModelDownloader:
         """
         Export model to ONNX from PyTorch.
         
+        Handles dict-input models (CLIP, X-CLIP) by exporting the
+        vision/audio encoder branch only, which accepts a single tensor.
+        
         Args:
             source: Model source info
             dest_path: Destination path
@@ -469,7 +650,6 @@ class ModelDownloader:
             return False
         
         try:
-            from transformers import AutoModel, AutoImageProcessor, AutoTokenizer
             import torch
             
             logger.info(f"Exporting {source.name} to ONNX from PyTorch...")
@@ -477,42 +657,62 @@ class ModelDownloader:
             loop = asyncio.get_event_loop()
             with ThreadPoolExecutor() as executor:
                 def export_model():
-                    # Load model based on type
+                    # Load model based on type — export vision/audio branch only
                     if "clip" in source.huggingface_repo.lower():
-                        from transformers import CLIPModel, CLIPProcessor
-                        model = CLIPModel.from_pretrained(source.huggingface_repo)
-                        processor = CLIPProcessor.from_pretrained(source.huggingface_repo)
+                        from transformers import CLIPVisionModel, CLIPImageProcessor
+                        # Export ONLY the vision encoder (single tensor input)
+                        # Use eager attention for ONNX export compatibility
+                        model = CLIPVisionModel.from_pretrained(
+                            source.huggingface_repo,
+                            attn_implementation="eager"
+                        )
                         input_shape = source.onnx_export_input_shape or [1, 3, 224, 224]
                         dummy_input = torch.randn(*input_shape)
+                    elif "xclip" in source.huggingface_repo.lower():
+                        from transformers import XCLIPVisionModel
+                        # Export ONLY the vision encoder
+                        model = XCLIPVisionModel.from_pretrained(source.huggingface_repo)
+                        input_shape = source.onnx_export_input_shape or [1, 8, 3, 224, 224]
+                        dummy_input = torch.randn(*input_shape)
                     elif "gpt2" in source.huggingface_repo.lower():
-                        from transformers import GPT2LMHeadModel, GPT2Tokenizer
+                        from transformers import GPT2LMHeadModel
                         model = GPT2LMHeadModel.from_pretrained(source.huggingface_repo)
-                        tokenizer = GPT2Tokenizer.from_pretrained(source.huggingface_repo)
                         dummy_input = torch.randint(0, 50257, (1, 512))
                     elif "wav2vec" in source.huggingface_repo.lower():
-                        from transformers import Wav2Vec2Model, Wav2Vec2Processor
+                        from transformers import Wav2Vec2Model
                         model = Wav2Vec2Model.from_pretrained(source.huggingface_repo)
                         dummy_input = torch.randn(1, 16000)
                     elif "siglip" in source.huggingface_repo.lower():
-                        from transformers import SiglipModel, SiglipProcessor
-                        model = SiglipModel.from_pretrained(source.huggingface_repo)
+                        from transformers import SiglipVisionModel
+                        model = SiglipVisionModel.from_pretrained(source.huggingface_repo)
                         input_shape = source.onnx_export_input_shape or [1, 3, 384, 384]
+                        dummy_input = torch.randn(*input_shape)
+                    elif "dinov2" in source.huggingface_repo.lower():
+                        from transformers import Dinov2Model
+                        model = Dinov2Model.from_pretrained(source.huggingface_repo)
+                        input_shape = source.onnx_export_input_shape or [1, 3, 224, 224]
+                        dummy_input = torch.randn(*input_shape)
+                    elif "efficientnet" in source.huggingface_repo.lower():
+                        from transformers import AutoModel
+                        model = AutoModel.from_pretrained(source.huggingface_repo)
+                        input_shape = source.onnx_export_input_shape or [1, 3, 224, 224]
                         dummy_input = torch.randn(*input_shape)
                     else:
                         # Generic model loading
+                        from transformers import AutoModel
                         model = AutoModel.from_pretrained(source.huggingface_repo)
                         input_shape = source.onnx_export_input_shape or [1, 3, 224, 224]
                         dummy_input = torch.randn(*input_shape)
                     
                     model.eval()
                     
-                    # Export to ONNX
+                    # Export to ONNX (opset 17 for transformer attention support)
                     torch.onnx.export(
                         model,
                         dummy_input,
                         str(dest_path),
                         export_params=True,
-                        opset_version=14,
+                        opset_version=17,
                         do_constant_folding=True,
                         input_names=['input'],
                         output_names=['output'],
@@ -565,19 +765,25 @@ class ModelDownloader:
             import urllib.request
             import ssl
             
-            # Create SSL context
+            # Create SSL context (verify certificates by default)
             ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
             
             logger.info(f"Downloading from URL: {url}")
             
             loop = asyncio.get_event_loop()
+            
+            def _download():
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, context=ssl_context) as response:
+                    with open(str(dest_path), 'wb') as f:
+                        while True:
+                            chunk = response.read(8192)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+            
             with ThreadPoolExecutor() as executor:
-                await loop.run_in_executor(
-                    executor,
-                    lambda: urllib.request.urlretrieve(url, str(dest_path))
-                )
+                await loop.run_in_executor(executor, _download)
             
             if dest_path.exists() and dest_path.stat().st_size > 10000:
                 logger.info(f"Successfully downloaded to {dest_path}")
@@ -699,3 +905,133 @@ async def download_models_on_startup(
         return await downloader.download_essential_models()
     else:
         return await downloader.download_all_models()
+
+
+# ---------------------------------------------------------------------
+# Iteration 1: SOTA model snapshot puller (manifest-driven, pinned)
+# ---------------------------------------------------------------------
+
+async def pull_sota_snapshot(
+    model_key: str,
+    target_dir: Optional[str] = None,
+    manifest_path: Optional[str] = None,
+    verify: Optional[bool] = None,
+) -> Optional[str]:
+    """
+    Pull a SOTA model snapshot from HuggingFace using the deterministic
+    manifest. The snapshot is pulled with `revision=<pinned_sha>` so
+    the same manifest always produces the same bytes.
+
+    Args:
+        model_key: Key in manifest.yaml (e.g. "clip_image_detector").
+        target_dir: Where to place the snapshot. Defaults to
+            ``/models/<model_key>``.
+        manifest_path: Path to manifest.yaml. Defaults to
+            ``config.model_manifest_path``.
+        verify: If True, verify sha256 against manifest. Defaults to
+            ``config.verify_model_checksums``.
+
+    Returns:
+        Path to the snapshot directory, or None on failure.
+    """
+    from config import config as _cfg
+
+    if manifest_path is None:
+        manifest_path = _cfg.model_manifest_path
+    if verify is None:
+        verify = _cfg.verify_model_checksums
+    if target_dir is None:
+        target_dir = os.path.join(_cfg.model_cache_dir, model_key)
+
+    manifest = load_manifest(manifest_path)
+    entry = manifest.get(model_key)
+    if not entry:
+        logger.warning(
+            "pull_sota_snapshot: %s not in manifest %s — skipping",
+            model_key, manifest_path,
+        )
+        return None
+
+    repo = entry.get("repo")
+    revision = entry.get("revision", "main")
+    filename = entry.get("filename")
+    expected_sha = entry.get("sha256", "")
+    if not repo:
+        logger.error("pull_sota_snapshot: %s has no repo in manifest", model_key)
+        return None
+
+    os.makedirs(target_dir, exist_ok=True)
+    logger.info(
+        "pull_sota_snapshot: %s from %s@%s (filename=%s)",
+        model_key, repo, revision, filename,
+    )
+
+    try:
+        if not HAS_HF_HUB:
+            logger.error(
+                "pull_sota_snapshot: huggingface_hub not installed — "
+                "cannot pull %s", model_key,
+            )
+            return None
+
+        # Set token if available
+        if _cfg.huggingface_token and _cfg.huggingface_token != "":
+            try:
+                login(token=_cfg.huggingface_token)
+            except Exception:
+                pass  # Already logged in or offline
+
+        if filename:
+            # Single-file pull
+            local_path = hf_hub_download(
+                repo_id=repo,
+                filename=filename,
+                revision=revision,
+                cache_dir=_cfg.model_cache_dir,
+                local_dir=target_dir,
+            )
+            if verify and expected_sha:
+                if not verify_sha256(local_path, expected_sha):
+                    logger.error(
+                        "pull_sota_snapshot: sha256 mismatch for %s "
+                        "(expected %s)", local_path, expected_sha,
+                    )
+                    return None
+        else:
+            # Full snapshot pull
+            snapshot_download(
+                repo_id=repo,
+                revision=revision,
+                cache_dir=_cfg.model_cache_dir,
+                local_dir=target_dir,
+            )
+
+        logger.info("pull_sota_snapshot: %s -> %s", model_key, target_dir)
+        return target_dir
+
+    except Exception as e:
+        logger.error("pull_sota_snapshot: %s failed: %s", model_key, e)
+        return None
+
+
+async def pull_all_sota_snapshots(
+    manifest_path: Optional[str] = None,
+    verify: Optional[bool] = None,
+) -> Dict[str, Optional[str]]:
+    """
+    Pull all SOTA snapshots listed in the manifest.
+
+    Returns a dict mapping model_key -> local_path (or None on failure).
+    Useful for cold-start warmup in the Docker entrypoint.
+    """
+    from config import config as _cfg
+    if manifest_path is None:
+        manifest_path = _cfg.model_manifest_path
+
+    manifest = load_manifest(manifest_path)
+    results: Dict[str, Optional[str]] = {}
+    for key in manifest.keys():
+        results[key] = await pull_sota_snapshot(
+            key, manifest_path=manifest_path, verify=verify,
+        )
+    return results

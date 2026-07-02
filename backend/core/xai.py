@@ -8,13 +8,11 @@ Implements: PRIME_ARGUS_DOCUMENT.md - Section 2.3 - Explainability
 XAI Methods:
 - GradCAM++: Visual attention heatmaps for CNN-based image/video analysis
 - DCT Frequency Analysis: Frequency domain artifact visualization
-- SHAP-inspired Token Attribution: Text AI detection explainability
 - Spectrogram Overlay: Audio artifact visualization
 
 Scientific References:
 - Selvaraju et al. (2019) "Grad-CAM: Visual Explanations from Deep Networks"
 - Wang et al. (2020) "CNN-generated images are surprisingly easy to spot"
-- Fagni et al. (2021) "TweepFake: Detection of deepfake tweets"
 - Tak et al. (2021) "AASIST: Anti-spoofing with attention and self-supervised learning"
 
 Court Admissibility:
@@ -70,12 +68,6 @@ SCIENTIFIC_REFERENCES = {
         citation="Wang, S.Y., Wang, O., Zhang, R., Owens, A., Efros, A.A. (2020). CNN-generated images are surprisingly easy to spot... for now. Proceedings of CVPR. doi:10.1109/CVPR42600.2020.00869",
         doi="10.1109/CVPR42600.2020.00869",
         accuracy_metrics="Frequency domain analysis for GAN-generated image detection"
-    ),
-    "radar": ScientificReference(
-        method_name="RADAR AI-Text Detector",
-        citation="Hu, J., Li, Z., Li, J., Zhang, S., Chen, Y., Wang, K. (2023). RADAR: Robust AI-Text Detection via Adversarial Learning. Proceedings of NeurIPS. doi:10.48550/arXiv.2307.03838",
-        doi="10.48550/arXiv.2307.03838",
-        accuracy_metrics="Adversarial training for robust AI text detection"
     ),
     "aasist": ScientificReference(
         method_name="AASIST Audio Anti-Spoofing",
@@ -151,7 +143,6 @@ class XAIGenerator:
     Provides visualization and explanation methods for all modalities:
     - Image: GradCAM++ heatmaps with DCT frequency overlays
     - Audio: Spectrogram overlays with artifact markers
-    - Text: Token-level attribution with perplexity breakdown
     - Video: Frame-level heatmaps with temporal annotations
     
     All outputs include cryptographic hashes for chain-of-custody.
@@ -562,11 +553,15 @@ class XAIGenerator:
         
         # Model confidence
         if "confidence" in model_output:
+            conf_val = float(model_output["confidence"])
+            # Direction depends on whether model leans toward fake or real
+            fake_prob = float(model_output.get("fake_probability", 0.5))
+            direction = "increases_fake" if fake_prob > 0.5 else "decreases_fake"
             features.append(FeatureImportance(
                 feature_name="model_confidence",
-                importance_score=float(model_output["confidence"]),
-                contribution_direction="increases_fake",
-                confidence=float(model_output["confidence"]),
+                importance_score=conf_val,
+                contribution_direction=direction,
+                confidence=conf_val,
                 feature_type="spatial"
             ))
         
@@ -992,9 +987,6 @@ class XAIGenerator:
         # Heatmap hash
         hasher.update(heatmap.tobytes())
         
-        # Timestamp for uniqueness
-        hasher.update(datetime.utcnow().isoformat().encode())
-        
         return hasher.hexdigest()[:32]
     
     def create_evidence_package(
@@ -1009,7 +1001,7 @@ class XAIGenerator:
         
         Args:
             analysis_id: Unique analysis identifier
-            modality: Analysis modality (image, audio, text, video)
+            modality: Analysis modality (image, audio, video)
             xai_results: List of XAI results
             model_versions: Dictionary of model names to versions
             

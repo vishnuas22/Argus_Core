@@ -648,14 +648,6 @@ function ScoreBreakdown({ breakdown }: { breakdown: ScoreBreakdownType }) {
         key: 'audio'
       });
     }
-    if (breakdown.text !== undefined) {
-      items.push({ 
-        label: 'Text Analysis', 
-        score: breakdown.text * 100, 
-        weight: breakdown.weights?.text || 0.1,
-        key: 'text'
-      });
-    }
     if (breakdown.metadata !== undefined) {
       items.push({ 
         label: 'Metadata', 

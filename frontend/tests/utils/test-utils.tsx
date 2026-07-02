@@ -26,7 +26,6 @@ import type {
   TrustScore,
   VideoResult,
   AudioResult,
-  TextResult,
   ImageResult,
   MetadataResult,
 } from '@/types/analysis';
@@ -114,13 +113,11 @@ export function createMockTrustScore(overrides?: Partial<TrustScore>): TrustScor
       image: 80,
       video: 70,
       audio: 75,
-      text: 80,
     },
     weights: {
       image: 0.3,
       video: 0.3,
       audio: 0.2,
-      text: 0.2,
     },
     timestamp: new Date().toISOString(),
     ...overrides,
@@ -211,26 +208,6 @@ export function createMockAudioResult(overrides?: Partial<AudioResult>): AudioRe
 }
 
 /**
- * Create mock TextResult
- */
-export function createMockTextResult(overrides?: Partial<TextResult>): TextResult {
-  return {
-    modality: 'text' as Modality,
-    score: 80,
-    confidence: 0.90,
-    verdict: 'authentic' as Verdict,
-    analysis_timestamp: new Date().toISOString(),
-    ai_probability: 0.15,
-    perplexity: 45.2,
-    burstiness: 0.68,
-    detected_patterns: [
-      { pattern: 'human-like-variation', confidence: 0.85 },
-    ],
-    ...overrides,
-  };
-}
-
-/**
  * Create mock ImageResult
  */
 export function createMockImageResult(overrides?: Partial<ImageResult>): ImageResult {
@@ -286,7 +263,6 @@ export function createMockAnalysisDetail(
     ...createMockAnalysisResponse(),
     video_result: createMockVideoResult(),
     audio_result: createMockAudioResult(),
-    text_result: createMockTextResult(),
     image_result: createMockImageResult(),
     metadata_result: createMockMetadataResult(),
     explanation: {

@@ -22,9 +22,10 @@ Integration:
 - Outputs: TrustScore, Verdict
 """
 
+import os
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from config import config
 from schemas.schemas import (
@@ -50,7 +51,7 @@ class PlattParams:
     Reference: Platt, J. (1999). Probabilistic Outputs for SVMs
     and Comparisons to Regularized Likelihood Methods.
     """
-    a: float = 3.0   # Sharpness (higher = more binary outputs)
+    a: float = 1.0   # Sharpness (1.0 = identity; increase after fitting on labeled data)
     b: float = 0.0   # Bias (positive = shift toward "fake")
     
     def transform(self, score: float) -> float:
@@ -111,13 +112,14 @@ class PlattParams:
 # Parameters chosen to map raw scores to well-calibrated probabilities:
 # - a > 1.0: Sharpening sigmoid (pushes extreme scores further from 0.5)
 # - b: Bias correction (centering adjustment)
-# These are reasonable defaults; production systems should fit Platt parameters
-# on a labeled validation set for optimal calibration.
+# DEFAULT: a=1.0 (identity transform) until Platt parameters are fitted
+# on a labeled validation set. Previous unfitted default (a=3.0) was
+# artificially inflating scores 3x — removed per RIVP audit.
 DEFAULT_PLATT_PARAMS = {
-    ContentType.VIDEO_WITH_SPEECH: PlattParams(a=3.0, b=0.0),
-    ContentType.VIDEO_NO_SPEECH: PlattParams(a=3.0, b=0.0),
-    ContentType.AUDIO_ONLY: PlattParams(a=2.5, b=0.0),
-    ContentType.IMAGE_ONLY: PlattParams(a=3.0, b=0.0),
+    ContentType.VIDEO_WITH_SPEECH: PlattParams(a=1.0, b=0.0),
+    ContentType.VIDEO_NO_SPEECH: PlattParams(a=1.0, b=0.0),
+    ContentType.AUDIO_ONLY: PlattParams(a=1.0, b=0.0),
+    ContentType.IMAGE_ONLY: PlattParams(a=1.0, b=0.0),
 }
 
 
@@ -175,7 +177,7 @@ class ScoringConfig:
     
     # Uncertainty handling
     uncertainty_penalty: float = 0.1  # Reduce confidence when uncertain
-    max_uncertainty_for_verdict: float = 0.4  # Above this, force "uncertain"
+    max_uncertainty_for_verdict: float = 0.7  # Above this, force "uncertain" (raised from 0.4 to allow confident single-modality verdicts)
     
     # Content-type adjustments
     use_content_type_thresholds: bool = True
@@ -227,7 +229,10 @@ class TrustScorer:
         self.config = scoring_config or ScoringConfig()
         self.thresholds = thresholds or VerdictThresholds.from_config()
         self.platt_params = platt_params or DEFAULT_PLATT_PARAMS.copy()
-        
+
+        # Try to load fitted Platt params from disk
+        self._load_platt_params_from_disk()
+
         logger.info(
             f"TrustScorer initialized: platt={self.config.use_platt_calibration}, "
             f"thresholds=({self.thresholds.authentic}/{self.thresholds.likely_authentic}/"
@@ -278,8 +283,8 @@ class TrustScorer:
                     logger.debug(f"Routed to Image DCT anomaly score: {dct_score:.3f}")
                 
                 # Video deterministic (Optical Flow / Motion Anomaly)
-                if 'temporal' in details and hasattr(details['temporal'], 'motion_anomaly_score'):
-                    motion_score = details['temporal'].motion_anomaly_score
+                if 'temporal' in details and isinstance(details['temporal'], dict) and 'motion_anomaly_score' in details['temporal']:
+                    motion_score = details['temporal']['motion_anomaly_score']
                     deterministic_scores.append(motion_score)
                     logger.debug(f"Routed to Video Optical Flow motion anomaly score: {motion_score:.3f}")
                 
@@ -295,7 +300,11 @@ class TrustScorer:
                 # Blend the raw score with the deterministic score
                 raw_score = 0.3 * raw_score + 0.7 * avg_deterministic
                 authenticity_prob = 1.0 - raw_score
-                logger.info(f"Uncertainty routing applied. New raw_score={raw_score:.3f}")
+                logger.warning(
+                    "RIVP: Uncertainty routing applied — neural score overridden by "
+                    f"70%% deterministic blend. raw_score={raw_score:.3f}, "
+                    f"deterministic={avg_deterministic:.3f}"
+                )
         
         # Apply Platt calibration if enabled
         # NOTE: IMAGE_ONLY skips Platt calibration because the image analyzer
@@ -664,6 +673,38 @@ class TrustScorer:
         except ImportError:
             logger.warning("sklearn not available, using default Platt params")
             return self.platt_params.get(content_type, PlattParams())
+
+    def save_platt_params(self, path: str) -> None:
+        """Save fitted Platt parameters to disk as JSON."""
+        import json
+        data = {}
+        for ct, params in self.platt_params.items():
+            data[ct.value] = {"a": params.a, "b": params.b}
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+        logger.info("Saved Platt params to %s: %s", path, data)
+
+    def _load_platt_params_from_disk(self) -> None:
+        """Load fitted Platt parameters from disk if available."""
+        import json
+        path = getattr(config, "platt_params_path", "")
+        if not path or not os.path.exists(path):
+            return
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            for ct_str, params_dict in data.items():
+                try:
+                    ct = ContentType(ct_str)
+                    self.platt_params[ct] = PlattParams(
+                        a=params_dict["a"], b=params_dict["b"]
+                    )
+                except (ValueError, KeyError):
+                    pass
+            logger.info("Loaded fitted Platt params from %s", path)
+        except Exception as e:
+            logger.warning("Failed to load Platt params from %s: %s", path, e)
     
     def batch_compute(
         self,

@@ -1,49 +1,78 @@
-# Argus Core - Full Stack Docker Compose
-# Production-ready multi-container deployment with ONNX Runtime and ML support
+# ============================================================
+# Argus Core - Full Stack Docker Compose (Iteration 1)
+# ============================================================
+# Iteration 1 changes (see CHANGELOG.md):
+#   * Backend + celery-worker now request GPU resources via the
+#     Docker Compose v2 `deploy.reservations.devices` syntax.
+#     Set ENABLE_GPU=false to fall back to CPU-only.
+#   * JWT_SECRET is now read by config.py under both JWT_SECRET
+#     and SECRET_KEY env names (fixes the naming-mismatch bug).
+#   * CORS_ORIGINS must be set explicitly in production — the
+#     wildcard is no longer honored unless ENVIRONMENT=dev.
+#   * MongoDB auth is mandatory: MONGO_USER/MONGO_PASSWORD must
+#     be set in .env (no insecure defaults in production).
+#   * Redis now requires a password (REDIS_PASSWORD env).
+#   * Model snapshots live in a dedicated named volume that is
+#     shared between backend and celery-worker so both processes
+#     see the same SOTA weights.
+#   * Frontend healthcheck uses wget (curl not always present in
+#     the Next.js alpine image).
+#   * All services have explicit stop_grace_period and logging
+#     limits to prevent log-induced disk exhaustion.
+# ============================================================
 
 services:
   # ============================================
   # Infrastructure Services
   # ============================================
-  
-  # Redis - Message Broker & Cache
+
+  # Redis - Message Broker & Cache (password-protected)
   redis:
     image: redis:7-alpine
     container_name: argus-redis
     restart: unless-stopped
-    # Port 6379 available internally on argus-network
     expose:
       - "6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+    user: root
     deploy:
       resources:
         limits:
           cpus: '0.5'
           memory: 256M
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
       - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  # MongoDB - Primary Database
+  # MongoDB - Primary Database (auth mandatory)
   mongodb:
     image: mongo:7
     container_name: argus-mongodb
     restart: unless-stopped
-    # Port 27017 available internally on argus-network
     expose:
       - "27017"
     volumes:
       - mongodb_data:/data/db
       - mongodb_config:/data/configdb
     environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-argusadmin}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-argussecret123}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:?MONGO_USER must be set}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?MONGO_PASSWORD must be set}
       MONGO_INITDB_DATABASE: argus_core
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
@@ -57,13 +86,17 @@ services:
           memory: 1G
     networks:
       - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # MinIO - S3-Compatible Object Storage
   minio:
     image: minio/minio:RELEASE.2024-12-18T13-15-44Z
     container_name: argus-minio
     restart: unless-stopped
-    # Port 9000 exposed for presigned URL access; console 9001 is internal only
     ports:
       - "9000:9000"
     expose:
@@ -71,8 +104,8 @@ services:
     volumes:
       - minio_data:/data
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-argusadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-argussecret123}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
     command: server /data --console-address ":9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
@@ -86,6 +119,11 @@ services:
           memory: 512M
     networks:
       - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ============================================
   # Application Services
@@ -97,46 +135,78 @@ services:
       context: ./backend
       dockerfile: Dockerfile
       target: production
+      args:
+        # Pass through GPU build flag — set BUILD_TARGET=cpu in .env
+        # to build the CPU-only image (smaller, no CUDA).
+        BASE_IMAGE: ${BACKEND_BASE_IMAGE:-nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04}
     container_name: argus-backend
     restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
-      # Database (matching config.py variable names)
-      MONGO_URL: mongodb://${MONGO_USER:-argusadmin}:${MONGO_PASSWORD:-argussecret123}@mongodb:27017/argus_core?authSource=admin
+      # Database (auth mandatory)
+      MONGO_URL: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongodb:27017/argus_core?authSource=admin
       DB_NAME: argus_core
-      # Redis
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      # Redis (password-protected)
+      REDIS_URL: redis://:${REDIS_PASSWORD:-argusredis123}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-argusredis123}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-argusredis123}@redis:6379/1
       # MinIO
       MINIO_ENDPOINT: minio:9000
       MINIO_EXTERNAL_ENDPOINT: localhost:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-argusadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-argussecret123}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MINIO_SECURE: "false"
       # Application
-      ENVIRONMENT: production
+      ENVIRONMENT: ${ENVIRONMENT:-production}
       DEBUG: "false"
-      LOG_LEVEL: INFO
-      # Security
-      JWT_SECRET: ${JWT_SECRET:-change-this-in-production}
-      API_KEY_SALT: ${API_KEY_SALT:-change-this-in-production}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Security — JWT_SECRET read by config.py under both names
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      SECRET_KEY: ${JWT_SECRET}
+      API_KEY_SALT: ${API_KEY_SALT:?API_KEY_SALT must be set}
+      # CORS — MUST be set explicitly in production (no wildcard)
+      CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS must be set}
       # Model Configuration
       MODEL_PATH: /models
       MODEL_CACHE_DIR: /models
-      USE_GPU: "false"
-      GPU_MEMORY_LIMIT_MB: 3500
+      MODEL_MANIFEST_PATH: /app/models/manifest.yaml
+      USE_GPU: ${USE_GPU:-true}
+      GPU_PROFILE: ${GPU_PROFILE:-t4}
+      GPU_MEMORY_LIMIT_MB: ${GPU_MEMORY_LIMIT_MB:-14000}
+      ENABLE_TENSORRT: ${ENABLE_TENSORRT:-true}
+      FALLBACK_TO_CPU: ${FALLBACK_TO_CPU:-true}
+      # Iteration 8: Execution mode (lite | balanced | research)
+      EXECUTION_MODE: ${EXECUTION_MODE:-balanced}
+      ENABLE_MEMORY_GUARD: ${ENABLE_MEMORY_GUARD:-true}
       # Model Download Settings
-      AUTO_DOWNLOAD_MODELS: "true"
-      DOWNLOAD_ON_STARTUP: "true"
+      AUTO_DOWNLOAD_MODELS: ${AUTO_DOWNLOAD_MODELS:-false}
+      DOWNLOAD_ON_STARTUP: ${DOWNLOAD_ON_STARTUP:-false}
+      SKIP_MODEL_WARMUP: "true"
+      VERIFY_MODEL_CHECKSUMS: ${VERIFY_MODEL_CHECKSUMS:-false}
+      ENABLE_SOTA_DETECTORS: ${ENABLE_SOTA_DETECTORS:-false}
       HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
       # HuggingFace Cache
       HF_HOME: /app/.cache
       TRANSFORMERS_CACHE: /app/.cache
       # Feature Flags
-      ENABLE_GRAD_CAM: "true"
-      ENABLE_REPORTS: "true"
+      ENABLE_GRAD_CAM: "false"
+      ENABLE_REPORTS: "false"
+      # Iteration 2: Defenses / Calibration / XAI / Drift
+      ENABLE_ADVERSARIAL_DEFENSES: ${ENABLE_ADVERSARIAL_DEFENSES:-true}
+      ENABLE_RPS: ${ENABLE_RPS:-true}
+      ENABLE_ADVERSARIAL_GATE: ${ENABLE_ADVERSARIAL_GATE:-false}
+      ENABLE_RS_LITE: ${ENABLE_RS_LITE:-false}
+      ENABLE_CALIBRATION: ${ENABLE_CALIBRATION:-true}
+      CONFORMAL_ALPHA: ${CONFORMAL_ALPHA:-0.10}
+      ENABLE_ATTN_LRP: ${ENABLE_ATTN_LRP:-true}
+      ENABLE_EIGEN_CAM: ${ENABLE_EIGEN_CAM:-true}
+      ENABLE_AUDIO_BAND_ATTRIBUTION: ${ENABLE_AUDIO_BAND_ATTRIBUTION:-true}
+      ENABLE_TEMPORAL_ATTRIBUTION: ${ENABLE_TEMPORAL_ATTRIBUTION:-true}
+      ENABLE_DRIFT_DETECTION: ${ENABLE_DRIFT_DETECTION:-true}
+      DRIFT_PSI_MODERATE: ${DRIFT_PSI_MODERATE:-0.10}
+      DRIFT_PSI_MAJOR: ${DRIFT_PSI_MAJOR:-0.25}
+      DRIFT_MMD_THRESHOLD: ${DRIFT_MMD_THRESHOLD:-0.05}
     volumes:
       - backend_models:/models
       - backend_logs:/app/logs
@@ -152,16 +222,23 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
-          memory: 2G
+          cpus: '4.0'
+          memory: 4G
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 120s
+      # H10 fix: use /api/v1/health (checks DB+storage) instead of bare /health
+      test: ["CMD", "curl", "-fsS", "--max-time", "5", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s  # H10 fix: reduced from 240s
+    stop_grace_period: 60s
     networks:
       - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   # Celery Worker - Async Task Processing
   celery-worker:
@@ -169,47 +246,70 @@ services:
       context: ./backend
       dockerfile: Dockerfile
       target: production
+      args:
+        BASE_IMAGE: ${BACKEND_BASE_IMAGE:-nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04}
     container_name: argus-celery-worker
     restart: unless-stopped
     command: >
       celery -A core.orchestrator.celery_app worker
       --loglevel=info
-      --concurrency=4
-      --pool=prefork
-      -Q celery,preprocessing,analysis,aggregation,reports
+      --concurrency=1
+      --pool=solo
+      -Q default,celery,preprocessing,analysis,aggregation,reports,dead_letter
     environment:
-      # Database (matching config.py variable names)
-      MONGO_URL: mongodb://${MONGO_USER:-argusadmin}:${MONGO_PASSWORD:-argussecret123}@mongodb:27017/argus_core?authSource=admin
+      # Same as backend (celery runs the same code paths)
+      MONGO_URL: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongodb:27017/argus_core?authSource=admin
       DB_NAME: argus_core
-      # Redis
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/1
-      # MinIO
+      REDIS_URL: redis://:${REDIS_PASSWORD:-argusredis123}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-argusredis123}@redis:6379/0
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-argusredis123}@redis:6379/1
       MINIO_ENDPOINT: minio:9000
       MINIO_EXTERNAL_ENDPOINT: localhost:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-argusadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-argussecret123}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MINIO_SECURE: "false"
-      # Application
-      ENVIRONMENT: production
+      ENVIRONMENT: ${ENVIRONMENT:-production}
       DEBUG: "false"
-      LOG_LEVEL: INFO
-      # Model Configuration
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      JWT_SECRET: ${JWT_SECRET}
+      SECRET_KEY: ${JWT_SECRET}
+      API_KEY_SALT: ${API_KEY_SALT}
+      CORS_ORIGINS: ${CORS_ORIGINS}
       MODEL_PATH: /models
       MODEL_CACHE_DIR: /models
-      USE_GPU: "false"
-      GPU_MEMORY_LIMIT_MB: 3500
-      # Model Download Settings
-      AUTO_DOWNLOAD_MODELS: "true"
-      DOWNLOAD_ON_STARTUP: "true"
+      MODEL_MANIFEST_PATH: /app/models/manifest.yaml
+      USE_GPU: ${USE_GPU:-true}
+      GPU_PROFILE: ${GPU_PROFILE:-t4}
+      GPU_MEMORY_LIMIT_MB: ${GPU_MEMORY_LIMIT_MB:-14000}
+      ENABLE_TENSORRT: ${ENABLE_TENSORRT:-true}
+      FALLBACK_TO_CPU: ${FALLBACK_TO_CPU:-true}
+      EXECUTION_MODE: ${EXECUTION_MODE:-balanced}
+      ENABLE_MEMORY_GUARD: ${ENABLE_MEMORY_GUARD:-true}
+      AUTO_DOWNLOAD_MODELS: ${AUTO_DOWNLOAD_MODELS:-false}
+      DOWNLOAD_ON_STARTUP: ${DOWNLOAD_ON_STARTUP:-false}
+      SKIP_MODEL_WARMUP: "true"
+      VERIFY_MODEL_CHECKSUMS: ${VERIFY_MODEL_CHECKSUMS:-false}
+      ENABLE_SOTA_DETECTORS: ${ENABLE_SOTA_DETECTORS:-false}
       HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
-      # HuggingFace Cache
       HF_HOME: /app/.cache
       TRANSFORMERS_CACHE: /app/.cache
-      # Feature Flags
-      ENABLE_GRAD_CAM: "true"
-      ENABLE_REPORTS: "true"
+      ENABLE_GRAD_CAM: "false"
+      ENABLE_REPORTS: "false"
+      # Iteration 2: Defenses / Calibration / XAI / Drift (same as backend)
+      ENABLE_ADVERSARIAL_DEFENSES: ${ENABLE_ADVERSARIAL_DEFENSES:-true}
+      ENABLE_RPS: ${ENABLE_RPS:-true}
+      ENABLE_ADVERSARIAL_GATE: ${ENABLE_ADVERSARIAL_GATE:-false}
+      ENABLE_RS_LITE: ${ENABLE_RS_LITE:-false}
+      ENABLE_CALIBRATION: ${ENABLE_CALIBRATION:-true}
+      CONFORMAL_ALPHA: ${CONFORMAL_ALPHA:-0.10}
+      ENABLE_ATTN_LRP: ${ENABLE_ATTN_LRP:-true}
+      ENABLE_EIGEN_CAM: ${ENABLE_EIGEN_CAM:-true}
+      ENABLE_AUDIO_BAND_ATTRIBUTION: ${ENABLE_AUDIO_BAND_ATTRIBUTION:-true}
+      ENABLE_TEMPORAL_ATTRIBUTION: ${ENABLE_TEMPORAL_ATTRIBUTION:-true}
+      ENABLE_DRIFT_DETECTION: ${ENABLE_DRIFT_DETECTION:-true}
+      DRIFT_PSI_MODERATE: ${DRIFT_PSI_MODERATE:-0.10}
+      DRIFT_PSI_MAJOR: ${DRIFT_PSI_MAJOR:-0.25}
+      DRIFT_MMD_THRESHOLD: ${DRIFT_MMD_THRESHOLD:-0.05}
     volumes:
       - backend_models:/models
       - backend_logs:/app/logs
@@ -225,16 +325,22 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
-          memory: 2G
+          cpus: '4.0'
+          memory: 4G
     healthcheck:
       test: ["CMD-SHELL", "celery -A core.orchestrator.celery_app inspect ping --timeout 5 || exit 1"]
       interval: 30s
       timeout: 15s
       retries: 3
       start_period: 60s
+    stop_grace_period: 120s
     networks:
       - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   # Frontend - Next.js Application
   frontend:
@@ -248,24 +354,96 @@ services:
       - "3000:3000"
     environment:
       NODE_ENV: production
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://backend:8000}
-      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://backend:8000}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8000}
     depends_on:
       backend:
         condition: service_healthy
     deploy:
       resources:
         limits:
-          cpus: '0.5'
+          cpus: '1.0'
           memory: 512M
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/ || curl -sf http://127.0.0.1:3000/ || exit 1"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/ || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 30s
+      start_period: 60s
+    stop_grace_period: 30s
     networks:
       - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ============================================
+  # Iteration 6: Observability Stack
+  # ============================================
+
+  # Prometheus - Metrics Collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: argus-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    networks:
+      - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Grafana - Visualization Dashboard
+  grafana:
+    image: grafana/grafana:latest
+    container_name: argus-grafana
+    restart: unless-stopped
+    ports:
+      - "3030:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/etc/grafana/provisioning/dashboards/argus-platform.json"
+    depends_on:
+      prometheus:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    networks:
+      - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 # ============================================
 # Networks
@@ -295,3 +473,8 @@ volumes:
     name: argus-backend-storage
   backend_cache:
     name: argus-backend-cache
+  # Iteration 6: Observability volumes
+  prometheus_data:
+    name: argus-prometheus-data
+  grafana_data:
+    name: argus-grafana-data

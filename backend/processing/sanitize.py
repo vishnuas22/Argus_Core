@@ -47,29 +47,6 @@ class FileType(str, Enum):
     TEXT_PLAIN = "text/plain"
 
 
-# Magic byte signatures for file type detection
-MAGIC_BYTES: Dict[bytes, FileType] = {
-    # JPEG
-    b'\xff\xd8\xff': FileType.IMAGE_JPEG,
-    # PNG
-    b'\x89PNG\r\n\x1a\n': FileType.IMAGE_PNG,
-    # WEBP
-    b'RIFF': FileType.IMAGE_WEBP,  # Need additional check for WEBP marker
-    # MP4/MOV (ftyp box)
-    b'\x00\x00\x00': FileType.VIDEO_MP4,  # Need additional check
-    # AVI
-    b'RIFF': FileType.VIDEO_AVI,  # Need additional check for AVI marker
-    # MP3
-    b'\xff\xfb': FileType.AUDIO_MP3,
-    b'\xff\xfa': FileType.AUDIO_MP3,
-    b'ID3': FileType.AUDIO_MP3,
-    # WAV
-    b'RIFF': FileType.AUDIO_WAV,  # Need additional check for WAVE marker
-    # OGG
-    b'OggS': FileType.AUDIO_OGG,
-}
-
-
 @dataclass
 class SanitizedFile:
     """Validated and sanitized file data."""
@@ -164,7 +141,7 @@ class InputSanitizer:
         is_audio = detected_type.value.startswith("audio/")
         is_text = detected_type.value.startswith("text/")
         
-        # Get duration for video/audio (placeholder - implement with ffprobe)
+        # Get duration for video/audio using ffprobe
         duration = None
         if is_video or is_audio:
             duration = await self._get_media_duration(file_content, detected_type)
@@ -281,34 +258,37 @@ class InputSanitizer:
         Returns None if duration cannot be determined.
         """
         try:
-            import subprocess
+            import asyncio
             import tempfile
             import os
-            
-            # Write to temp file
+            import stat
+
+            # M8 fix: use mkstemp with restrictive permissions (0600)
             suffix = "." + file_type.value.split("/")[1]
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
-                f.write(content)
-                temp_path = f.name
-            
+            fd, temp_path = tempfile.mkstemp(suffix=suffix, prefix="argus_")
+            os.chmod(temp_path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
             try:
-                result = subprocess.run(
-                    [
-                        "ffprobe",
-                        "-v", "error",
-                        "-show_entries", "format=duration",
-                        "-of", "default=noprint_wrappers=1:nokey=1",
-                        temp_path
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
+                with os.fdopen(fd, "wb") as f:
+                    f.write(content)
+
+                proc = await asyncio.create_subprocess_exec(
+                    "ffprobe",
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    temp_path,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
-                
-                if result.returncode == 0 and result.stdout.strip():
-                    return float(result.stdout.strip())
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+
+                if proc.returncode == 0 and stdout.strip():
+                    return float(stdout.strip())
             finally:
-                os.unlink(temp_path)
+                try:
+                    os.unlink(temp_path)
+                except FileNotFoundError:
+                    pass
                 
         except Exception as e:
             logger.warning(f"Failed to get media duration: {e}")

@@ -74,7 +74,7 @@ class ModelDownloadConfig:
     """Configuration for downloading and exporting a model."""
     name: str
     hf_model_id: str
-    model_type: str  # "audio", "video", "text", "image"
+    model_type: str  # "audio", "video", "image"
     task: str  # "classification", "feature_extraction", "detection"
     output_path: str
     input_shapes: Dict[str, Tuple[int, ...]]
@@ -100,21 +100,7 @@ class ModelDownloadConfig:
 # Production model configurations with verified HuggingFace sources
 MODEL_CONFIGS: Dict[str, ModelDownloadConfig] = {
     # ============== AUDIO MODELS ==============
-    "aasist_antispoof": ModelDownloadConfig(
-        name="aasist_antispoof",
-        hf_model_id="clovaai/aasist-l",
-        model_type="audio",
-        task="detection",
-        output_path="/models/aasist_antispoof.onnx",
-        input_shapes={"audio": (1, 64600)},  # ~4 seconds at 16kHz
-        output_names=["logits"],
-        num_classes=2,
-        class_labels=["bonafide", "spoof"],
-        audio_sample_rate=16000,
-        description="AASIST - ASVspoof 2021 winner for synthetic voice detection",
-        license="MIT",
-        academic_reference="https://arxiv.org/abs/2110.01216"
-    ),
+    # aasist_antispoof removed — DEPRECATED (HF source dima806/audio_deepfake_detection invalid, 2026-07-01).
     
     "wav2vec2_base": ModelDownloadConfig(
         name="wav2vec2_base",
@@ -594,7 +580,7 @@ class ProductionModelDownloader:
         Download all models for a specific modality.
         
         Args:
-            modality: Modality type (audio, video, text, image)
+            modality: Modality type (audio, video, image)
             force: Force re-download
             
         Returns:
@@ -670,7 +656,7 @@ def main():
     )
     parser.add_argument(
         "--modality",
-        help="Download all models for a modality (audio, video, text, image)",
+        help="Download all models for a modality (audio, video, image)",
         type=str,
         default=None
     )

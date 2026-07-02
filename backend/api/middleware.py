@@ -300,67 +300,83 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return self._check_rate_limit_local(client_id)
     
     async def _check_rate_limit_redis(self, client_id: str) -> tuple:
-        """Check rate limit using Redis."""
+        """Check rate limit using Redis (async wrapper around sync client)."""
         try:
-            key = f"ratelimit:{client_id}"
-            current_time = int(time.time())
-            window_start = current_time - 60
-            
-            # Use Redis sorted set for sliding window
-            pipe = self._redis_client.pipeline()
-            
-            # Remove old entries
-            pipe.zremrangebyscore(key, 0, window_start)
-            
-            # Count current requests
-            pipe.zcard(key)
-            
-            # Set expiry
-            pipe.expire(key, 120)
-            
-            results = pipe.execute()
-            request_count = results[1]
-            
-            allowed = request_count < self.requests_per_minute
-            
-            if allowed:
-                # Only add request if within limit
-                self._redis_client.zadd(key, {str(current_time): current_time})
-            
-            remaining = max(0, self.requests_per_minute - request_count - 1)
-            reset_in = 60 - (current_time % 60)
-            
-            return allowed, remaining, reset_in
-            
+            import asyncio
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, self._check_rate_limit_redis_sync, client_id)
         except Exception as e:
             logger.warning(f"Redis rate limit check failed: {e}")
             return self._check_rate_limit_local(client_id)
+    
+    def _check_rate_limit_redis_sync(self, client_id: str) -> tuple:
+        """Check rate limit using Redis (sync implementation)."""
+        key = f"ratelimit:{client_id}"
+        current_time = int(time.time())
+        window_start = current_time - 60
+        
+        # Use Redis sorted set for sliding window
+        pipe = self._redis_client.pipeline()
+        
+        # Remove old entries
+        pipe.zremrangebyscore(key, 0, window_start)
+        
+        # Count current requests
+        pipe.zcard(key)
+        
+        # Set expiry
+        pipe.expire(key, 120)
+        
+        results = pipe.execute()
+        request_count = results[1]
+        
+        allowed = request_count < self.requests_per_minute
+        
+        if allowed:
+            # Only add request if within limit
+            self._redis_client.zadd(key, {str(current_time): current_time})
+        
+        remaining = max(0, self.requests_per_minute - request_count - (1 if allowed else 0))
+        reset_in = 60 - (current_time % 60)
+        
+        return allowed, remaining, reset_in
     
     def _check_rate_limit_local(self, client_id: str) -> tuple:
         """Check rate limit using local in-memory storage."""
         current_time = time.time()
         window_start = current_time - 60
-        
+
+        # M5 fix: global TTL eviction to prevent unbounded memory growth.
+        # An attacker rotating through millions of IPs accumulates one
+        # dict entry per IP forever. This GC evicts inactive buckets.
+        MAX_BUCKETS = 100_000
+        EVICT_AFTER = 120  # seconds
+        if len(self._local_buckets) > MAX_BUCKETS:
+            self._local_buckets = {
+                k: v for k, v in self._local_buckets.items()
+                if v["requests"] and v["requests"][-1] > current_time - EVICT_AFTER
+            }
+
         if client_id not in self._local_buckets:
             self._local_buckets[client_id] = {"requests": []}
-        
+
         bucket = self._local_buckets[client_id]
-        
+
         # Remove old requests
         bucket["requests"] = [t for t in bucket["requests"] if t > window_start]
-        
+
         # Check limit
         if len(bucket["requests"]) >= self.requests_per_minute:
             remaining = 0
             reset_in = int(60 - (current_time - bucket["requests"][0]))
             return False, remaining, max(1, reset_in)
-        
+
         # Add request
         bucket["requests"].append(current_time)
-        
+
         remaining = self.requests_per_minute - len(bucket["requests"])
         reset_in = 60
-        
+
         return True, remaining, reset_in
 
 
@@ -581,17 +597,22 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         call_next: RequestResponseEndpoint
     ) -> Response:
         response = await call_next(request)
-        
+
         # Security headers
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-XSS-Protection"] = "1; mode=block"
+        # H9 fix: X-XSS-Protection: 0 is the modern recommendation (deprecated 1; mode=block)
+        response.headers["X-XSS-Protection"] = "0"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        
+        # H9 fix: add Content-Security-Policy and Permissions-Policy
+        response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        response.headers["X-Permitted-Cross-Domain-Policies"] = "none"
+
         # HSTS (only in production with HTTPS)
         if request.url.scheme == "https":
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        
+
         return response
 
 

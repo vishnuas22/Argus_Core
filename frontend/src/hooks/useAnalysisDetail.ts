@@ -110,7 +110,13 @@ export function useAnalysisDetail(
     queryFn: () => analysisApi.getAnalysis(analysisId),
     enabled: enabled && !!analysisId,
     staleTime: 30000, // 30 seconds
-    refetchInterval: refetchInterval,
+    // Poll every 5s as fallback when WebSocket is unavailable
+    refetchInterval: refetchInterval ?? ((query) => {
+      const analysisData = query.state.data;
+      if (!analysisData) return 5000;
+      if (analysisData.status === 'completed' || analysisData.status === 'failed') return false;
+      return 5000;
+    }),
     // Retry configuration
     retry: (failureCount, error) => {
       // Don't retry 404s

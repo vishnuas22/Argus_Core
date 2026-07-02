@@ -34,8 +34,6 @@ import time
 from analyzers.base import (
     SubAnalyzer,
     compute_confidence,
-    infer_fake_class_index,
-    extract_fake_probabilities,
 )
 from schemas.schemas import LipSyncResult
 from config import config

@@ -99,11 +99,12 @@ class ValidationError(ArgusError):
     status_code = 400
     error_code = "VALIDATION_ERROR"
     
-    def __init__(self, field: str, reason: str):
-        super().__init__(
-            f"Validation failed for {field}: {reason}",
-            {"field": field, "reason": reason}
-        )
+    def __init__(self, field: str = "", reason: str = ""):
+        if reason:
+            msg = f"Validation failed for {field}: {reason}"
+        else:
+            msg = field or "Validation failed"
+        super().__init__(msg, {"field": field, "reason": reason})
 
 
 class ConfigurationError(ArgusError):
@@ -194,9 +195,67 @@ class XAIError(ArgusError):
     """Raised when XAI explanation generation fails."""
     status_code = 500
     error_code = "XAI_GENERATION_FAILED"
-    
+
     def __init__(self, reason: str = "Unknown error"):
         super().__init__(
             f"XAI explanation generation failed: {reason}",
             {"reason": reason}
+        )
+
+
+# ============================================================
+# L4 fix: missing error types for complete error hierarchy.
+# These were identified by the Iteration 9.5 security audit as
+# missing — the codebase was conflating timeouts, quota issues,
+# and missing models with generic InferenceError / ModelLoadError.
+# ============================================================
+
+
+class TimeoutError(ArgusError):
+    """Raised when an inference or processing operation times out.
+
+    Previously, Celery's SoftTimeLimitExceeded was re-raised bare,
+    with no structured error code. Now callers can catch TimeoutError
+    specifically and return HTTP 504 Gateway Timeout.
+    """
+    status_code = 504
+    error_code = "TIMEOUT"
+
+    def __init__(self, operation: str = "operation", timeout_s: float = 0):
+        super().__init__(
+            f"{operation} timed out after {timeout_s}s",
+            {"operation": operation, "timeout_seconds": timeout_s}
+        )
+
+
+class QuotaExceededError(ArgusError):
+    """Raised when storage or compute quota is exceeded.
+
+    Used when MinIO storage is full or the analysis queue depth
+    exceeds the configured limit. Maps to HTTP 413.
+    """
+    status_code = 413
+    error_code = "QUOTA_EXCEEDED"
+
+    def __init__(self, resource: str = "storage", limit: str = ""):
+        super().__init__(
+            f"{resource} quota exceeded{f' (limit: {limit})' if limit else ''}",
+            {"resource": resource, "limit": limit}
+        )
+
+
+class ModelNotFoundError(ArgusError):
+    """Raised when a requested model is not found in the registry.
+
+    Previously conflated with ModelLoadError (which implies the model
+    exists but failed to load). ModelNotFoundError means the model
+    key is not in the registry at all. Maps to HTTP 404.
+    """
+    status_code = 404
+    error_code = "MODEL_NOT_FOUND"
+
+    def __init__(self, model_name: str = ""):
+        super().__init__(
+            f"Model not found in registry: {model_name}",
+            {"model_name": model_name}
         )

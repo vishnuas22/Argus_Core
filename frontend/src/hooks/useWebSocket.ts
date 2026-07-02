@@ -136,9 +136,9 @@ function getWebSocketUrl(analysisId: string): string {
     if (wsUrl.startsWith('/')) {
       baseUrl = `${protocol}//${host}${wsUrl}/ws/analysis/${analysisId}`;
     }
-    // If WS_URL is empty, use current host with /api prefix
+    // If WS_URL is empty, use current host (no /api prefix — backend mounts at /ws)
     else if (!wsUrl) {
-      baseUrl = `${protocol}//${host}/api/ws/analysis/${analysisId}`;
+      baseUrl = `${protocol}//${host}/ws/analysis/${analysisId}`;
     }
     // Full URL provided
     else {

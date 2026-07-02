@@ -108,6 +108,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
 
     initializeAuth();
+
+    // Re-authenticate on 401 events from the API interceptor
+    const handleUnauthorized = () => {
+      setIsAuthenticated(false);
+      getAnonymousToken().then((ok) => {
+        setIsAuthenticated(ok);
+      });
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('auth:unauthorized', handleUnauthorized);
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('auth:unauthorized', handleUnauthorized);
+      }
+    };
   }, [getAnonymousToken]);
 
   return (

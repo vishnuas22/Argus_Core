@@ -220,60 +220,238 @@ def create_app() -> FastAPI:
             }
         )
     
+    # ============== SYSTEM ENDPOINTS ==============
+
+    @app.get("/", tags=["system"])
+    async def root():
+        """
+        Root endpoint.
+        
+        Returns basic API information.
+        """
+        return {
+            "name": config.api_title,
+            "version": config.api_version,
+            "description": config.api_description,
+            "docs_url": "/docs",
+            "health_url": "/api/v1/health"
+        }
+
+    @app.get("/health", tags=["system"])
+    async def health():
+        """
+        Basic health check endpoint.
+        
+        For detailed health with component status, use /api/v1/health.
+        For the full operational dashboard, use /health/detailed.
+        """
+        return {"status": "healthy"}
+
+    @app.get("/health/detailed", tags=["system"])
+    async def health_detailed():
+        """
+        Iteration 7: Detailed health endpoint surfacing the operational state
+        of every Iteration 1-6 subsystem.
+
+        Returns:
+            JSON with per-subsystem status:
+            - drift: PSI/MMD/severity per modality
+            - retrain: last cycle status per modality
+            - ab_test: candidate status per modality
+            - calibration: ECE/Brier/temperature per modality
+            - feedback: buffer size per modality
+            - models: which detectors are loaded
+            - defenses: adversarial defense counters
+            - certified_robustness: certification counters
+        """
+        import time as _time
+        from datetime import datetime, timezone
+
+        result = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "healthy",
+            "subsystems": {},
+        }
+
+        # --- Drift status ---
+        drift_status = {}
+        try:
+            from monitoring.drift_detector import get_default_drift_detector
+            from monitoring.reference_store import get_default_reference_store
+            ref = get_default_reference_store()
+            for modality in ["image", "audio", "video"]:
+                if ref.embeddings is not None and ref.modality == modality:
+                    drift_status[modality] = {
+                        "reference_loaded": True,
+                        "num_reference_samples": ref.num_samples,
+                        "reference_created_at": ref.created_at,
+                    }
+                else:
+                    drift_status[modality] = {
+                        "reference_loaded": False,
+                        "message": "no reference distribution loaded",
+                    }
+        except Exception as e:
+            drift_status["error"] = str(e)
+        result["subsystems"]["drift"] = drift_status
+
+        # --- Retrain status ---
+        retrain_status = {}
+        try:
+            from continuous_learning.feedback_buffer import get_default_feedback_buffer
+            buf = get_default_feedback_buffer()
+            from config import config as _cfg
+            for modality in ["image", "audio", "video"]:
+                count = buf.count(modality=modality)
+                min_samples = getattr(_cfg, "retrain_min_samples", 50)
+                retrain_status[modality] = {
+                    "feedback_samples": count,
+                    "min_samples_for_retrain": min_samples,
+                    "ready_for_retrain": count >= min_samples,
+                    "schedule_hours": getattr(_cfg, "retrain_schedule_hours", 24.0),
+                }
+        except Exception as e:
+            retrain_status["error"] = str(e)
+        result["subsystems"]["retrain"] = retrain_status
+
+        # --- A/B test status ---
+        ab_status = {}
+        try:
+            from continuous_learning.ab_test import get_default_ab_router
+            router = get_default_ab_router()
+            for modality in ["image", "audio", "video"]:
+                evaluation = router.evaluate_candidate(modality)
+                ab_status[modality] = evaluation
+        except Exception as e:
+            ab_status["error"] = str(e)
+        result["subsystems"]["ab_test"] = ab_status
+
+        # --- Calibration status ---
+        cal_status = {}
+        try:
+            from config import config as _cfg
+            for modality in ["image", "audio", "video"]:
+                ts_path = getattr(_cfg, "temperature_scaler_path", "")
+                cp_path = getattr(_cfg, "conformal_raps_path", "")
+                cal_status[modality] = {
+                    "temperature_scaler_loaded": bool(ts_path and os.path.exists(ts_path)),
+                    "conformal_raps_loaded": bool(cp_path and os.path.exists(cp_path)),
+                    "temperature_scaler_path": ts_path,
+                    "conformal_raps_path": cp_path,
+                }
+        except Exception as e:
+            cal_status["error"] = str(e)
+        result["subsystems"]["calibration"] = cal_status
+
+        # --- Feedback buffer ---
+        feedback_status = {}
+        try:
+            from continuous_learning.feedback_buffer import get_default_feedback_buffer
+            buf = get_default_feedback_buffer()
+            feedback_status["total"] = buf.count()
+            feedback_status["by_modality"] = {
+                m: buf.count(modality=m) for m in ["image", "audio", "video"]
+            }
+        except Exception as e:
+            feedback_status["error"] = str(e)
+        result["subsystems"]["feedback"] = feedback_status
+
+        # --- Embedding buffer ---
+        emb_status = {}
+        try:
+            from monitoring.embedding_buffer import get_default_embedding_buffer
+            emb = get_default_embedding_buffer()
+            if emb:
+                emb_status = emb.counts_all()
+            else:
+                emb_status = {"error": "Redis not connected"}
+        except Exception as e:
+            emb_status = {"error": str(e)}
+        result["subsystems"]["embedding_buffer"] = emb_status
+
+        # --- Model loading status ---
+        models_status = {}
+        try:
+            from models.registry import DEFAULT_MODELS
+            sota_keys = [
+                "clip_image_detector", "dinov2_image_detector", "siglip_image_detector",
+                "aasist3_audio_detector", "wav2vec2_xls_r_audio_detector",
+                "ecapa_audio_detector",
+                "videomae_video_detector", "altfree_video_detector",
+                "timesformer_video_detector",
+            ]
+            import os as _os
+            for key in sota_keys:
+                if key in DEFAULT_MODELS:
+                    meta = DEFAULT_MODELS[key]
+                    # Check if the model directory exists
+                    model_path = meta.path
+                    path_exists = _os.path.exists(model_path) if model_path else False
+                    models_status[key] = {
+                        "path": model_path,
+                        "path_exists": path_exists,
+                        "vram_mb": meta.vram_mb,
+                        "category": meta.category.value if hasattr(meta.category, 'value') else str(meta.category),
+                        "license": meta.license,
+                    }
+        except Exception as e:
+            models_status["error"] = str(e)
+        result["subsystems"]["models"] = models_status
+
+        # --- Defense flags ---
+        defense_status = {}
+        try:
+            from config import config as _cfg
+            defense_status["rps_enabled"] = getattr(_cfg, "enable_rps", False)
+            defense_status["adversarial_gate_enabled"] = getattr(_cfg, "enable_adversarial_gate", False)
+            defense_status["rs_lite_enabled"] = getattr(_cfg, "enable_rs_lite", False)
+            defense_status["certified_robustness_enabled"] = getattr(_cfg, "enable_certified_robustness", False)
+        except Exception as e:
+            defense_status["error"] = str(e)
+        result["subsystems"]["defenses"] = defense_status
+
+        # --- Continuous learning config ---
+        cl_status = {}
+        try:
+            from config import config as _cfg
+            cl_status["enabled"] = getattr(_cfg, "enable_continuous_learning", False)
+            cl_status["retrain_min_samples"] = getattr(_cfg, "retrain_min_samples", 50)
+            cl_status["retrain_schedule_hours"] = getattr(_cfg, "retrain_schedule_hours", 24.0)
+            cl_status["ab_test_ratio"] = getattr(_cfg, "retrain_ab_test_ratio", 0.1)
+        except Exception as e:
+            cl_status["error"] = str(e)
+        result["subsystems"]["continuous_learning"] = cl_status
+
+        return result
+
+    @app.get("/metrics", tags=["system"])
+    async def metrics():
+        """
+        Prometheus metrics endpoint.
+
+        Returns all application metrics in Prometheus format.
+        Both Iteration 6 observability metrics and legacy metrics
+        are registered in the default prometheus_client registry.
+        """
+        from fastapi.responses import PlainTextResponse
+
+        try:
+            from prometheus_client import generate_latest
+            output = generate_latest()
+            return PlainTextResponse(
+                content=output.decode() if isinstance(output, bytes) else output,
+                media_type="text/plain; version=0.0.4"
+            )
+        except Exception as e:
+            logger.debug(f"Metrics generation failed: {e}")
+            return {"error": "Metrics unavailable"}
+
     return app
 
 
-# ============== ROOT ENDPOINTS ==============
+# ============== PRODUCTION INSTANCE ==============
 
-# Create application instance
 app = create_app()
-
-
-@app.get("/", tags=["system"])
-async def root():
-    """
-    Root endpoint.
-    
-    Returns basic API information.
-    """
-    return {
-        "name": config.api_title,
-        "version": config.api_version,
-        "description": config.api_description,
-        "docs_url": "/docs",
-        "health_url": "/api/v1/health"
-    }
-
-
-@app.get("/health", tags=["system"])
-async def health():
-    """
-    Basic health check endpoint.
-    
-    For detailed health with component status, use /api/v1/health.
-    """
-    return {"status": "healthy"}
-
-
-@app.get("/metrics", tags=["system"])
-async def metrics():
-    """
-    Prometheus metrics endpoint.
-    
-    Returns application metrics in Prometheus format.
-    """
-    from utils.metrics import get_prometheus_metrics
-    
-    try:
-        metrics_text = get_prometheus_metrics()
-        from fastapi.responses import PlainTextResponse
-        return PlainTextResponse(
-            content=metrics_text,
-            media_type="text/plain; version=0.0.4"
-        )
-    except Exception as e:
-        logger.error(f"Metrics generation failed: {e}")
-        return {"error": "Metrics unavailable"}
 
 
 # ============== DEVELOPMENT SERVER ==============

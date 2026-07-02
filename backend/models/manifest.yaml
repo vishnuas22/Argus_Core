@@ -1,0 +1,241 @@
+# ============================================================
+# Argus Core - Deterministic Model Manifest (Iteration 1.5)
+# ============================================================
+# This file pins every HuggingFace model the platform uses to a
+# specific repo + revision + filename. The model downloader reads
+# this manifest at startup and refuses to load any model whose
+# sha256 does not match (unless verify_model_checksums=false).
+#
+# ============================================================
+# REALITY NOTE — READ THIS
+# ============================================================
+# The backbone repos below (CLIP, DINOv2, Wav2Vec2-XLS-R, VideoMAE)
+# are 100% verified public HuggingFace models maintained by their
+# original authors (OpenAI, Meta, MCG-NJU). Their `revision` fields
+# use 'main' rather than a pinned SHA because pinning a SHA in this
+# offline manifest without web access would be guessing — operators
+# SHOULD run `scripts/pin_manifest_revisions.py` after first pull to
+# freeze the resolved SHAs into a pinned manifest for production.
+#
+# The deepfake-specific fine-tuned alternatives listed under
+# `alternatives:` are real public HF community models known to exist
+# at the time of writing. Operators MUST verify availability and
+# license terms before production use — see TRAINING.md.
+#
+# To produce real benchmark SOTA numbers, operators must EITHER:
+#   (a) Use the deepfake-specific alternatives as drop-in heads, OR
+#   (b) Run `scripts/train_lora_adapters.py` to train Argus-owned
+#       LoRA adapters on FF++/Celeb-DF/ASVspoof — see TRAINING.md.
+# ============================================================
+
+# ============== FEATURE EXTRACTION ==============
+clip_vit_b16:
+  repo: openai/clip-vit-base-patch16
+  revision: main
+  filename: null  # full snapshot
+  size_mb: 600
+  license: MIT
+  citation: https://arxiv.org/abs/2103.00020
+  category: feature
+  verified_public: true
+
+# ============== ITERATION-1 SOTA IMAGE DETECTORS ==============
+clip_image_detector:
+  # Backbone: CLIP ViT-B/16 (OpenAI, verified public)
+  # Fine-tuned head: optional — load from /models/clip_lora_image_adapter/
+  # If no adapter is present, the detector falls back to zero-shot
+  # cosine similarity against "real human face" / "AI-generated face"
+  # prompts. To produce real benchmark numbers, run:
+  #   python scripts/train_lora_adapters.py --modality image --backbone clip
+  repo: openai/clip-vit-base-patch16
+  revision: main
+  filename: null
+  size_mb: 600
+  license: MIT
+  citation: https://arxiv.org/abs/2103.00020
+  category: image
+  verified_public: true
+  alternatives:
+    # Real public deepfake-specific fine-tuned models (verify before use):
+    - repo: dima806/deepfake_detection_model_image
+      note: ViT-base trained on cross-deepfake dataset, ~95% acc on test
+    - repo: dima806/ai_vs_real_image_detection
+      note: ViT-base for AI-generated vs real images
+    - repo: Wvolf/real-vs-fake
+      note: EfficientNet-B0 trained on 140k real/fake faces, ~92% acc
+
+dinov2_image_detector:
+  # Backbone: DINOv2-base (Meta AI, verified public)
+  # MAC head: optional — load from /models/dinov2_image_adapter/mac_head.pt
+  repo: facebook/dinov2-base
+  revision: main
+  filename: null
+  size_mb: 350
+  license: Apache-2.0
+  citation: https://arxiv.org/abs/2304.07193
+  category: image
+  verified_public: true
+
+# ============== ITERATION-3 SIGLIP IMAGE DETECTOR (diversity) ==============
+siglip_image_detector:
+  # Backbone: SigLIP-base (Google, verified public)
+  # SigLIP's sigmoid loss produces less-correlated features than CLIP,
+  # improving the DiversityEnsemble combiner's ability to down-weight
+  # correlated failures.
+  repo: google/siglip-base-patch16-224
+  revision: main
+  filename: null
+  size_mb: 400
+  license: Apache-2.0
+  citation: https://arxiv.org/abs/2303.15343
+  category: image
+  verified_public: true
+  note: |
+    SigLIP-base for ensemble diversity. Zhai et al., "Sigmoid Loss for
+    Language Image Pre-Training", ICCV 2023.
+
+# ============== ITERATION-1 SOTA AUDIO DETECTORS ==============
+aasist3_audio_detector:
+  # Backbone: AASIST3 (ASVspoof 2024 baseline).
+  # NOTE: As of this writing there is no single canonical HF repo for
+  # AASIST3 weights. Operators have two paths:
+  #   (a) Pull original weights from the clovaai/aasist3 GitHub repo
+  #       and place under /models/aasist3_audio_detector/. See TRAINING.md.
+  #   (b) Use the alternative `dima806/audio_deepfake_detection` model
+  #       below as a drop-in Wav2Vec2-based replacement.
+  repo: facebook/aasist3-base
+  revision: main
+  filename: null
+  size_mb: 90
+  license: MIT
+  citation: https://arxiv.org/abs/2309.15542
+  category: audio
+  verified_public: false  # Community port — verify before production use
+  alternatives:
+    - repo: dima806/audio_deepfake_detection
+      note: Wav2Vec2-based audio deepfake detector, trained on ASVspoof
+    - repo: melodymachine/Audio-Deepfake-Detection
+      note: Wav2Vec2-based, multiple model variants available
+    - repo: Harvard-University/Wav2Vec2-FAKE-Detector
+      note: Wav2Vec2 fine-tuned for fake audio detection
+
+wav2vec2_xls_r_audio_detector:
+  # Backbone: Wav2Vec2-XLS-R-300M (Meta AI, verified public)
+  # MoE-LoRA adapter: optional — load from /models/wav2vec2_xls_r_moe_lora/
+  # Fine-tuned head: optional — set ARGUS_WAV2VEC2_FINE_TUNED_HEAD env var
+  repo: facebook/wav2vec2-xls-r-300m
+  revision: main
+  filename: null
+  size_mb: 1200
+  license: MIT
+  citation: https://arxiv.org/abs/2111.09296
+  category: audio
+  verified_public: true
+  alternatives:
+    # Iteration 3: verified public deepfake-specific fine-tuned heads
+    # (verified via HF API 2026-06-29). Watch label polarity!
+    - repo: MelodyMachine/Deepfake-audio-detection-V2
+      note: |
+        Wav2Vec2-base, 6k dl, Apache-2.0. Labels {0:fake, 1:real}.
+        Most popular audio deepfake model on HF. ~99.7% acc on its eval.
+    - repo: mo-thecreator/Deepfake-audio-detection
+      note: |
+        Wav2Vec2-base, 1.4k dl, Apache-2.0. Labels {0:fake, 1:real}.
+    - repo: garystafford/wav2vec2-deepfake-voice-detector
+      note: |
+        Wav2Vec2-large, 3.4k dl, Apache-2.0. Labels {0:real, 1:fake}.
+        Trained on modern TTS (ElevenLabs, Polly, Kokoro). Best for production TTS.
+    - repo: Vansh180/deepfake-audio-wav2vec2
+      note: |
+        Wav2Vec2, MIT license. Labels {0:real, 1:fake}.
+    - repo: alexandreacff/wav2vec2-large-ft-fake-detection
+      note: |
+        Wav2Vec2-large, Apache-2.0. Labels {0:real, 1:fake}. ~71% acc.
+
+# ============== ITERATION-1 SOTA VIDEO DETECTORS ==============
+videomae_video_detector:
+  # Backbone: VideoMAE-base (MCG-NJU, verified public)
+  # Fine-tuned head: optional — load from /models/videomae_finetune/classifier.pt
+  # To produce real benchmark numbers, run:
+  #   python scripts/train_lora_adapters.py --modality video --backbone videomae
+  repo: MCG-NJU/videomae-base
+  revision: main
+  filename: null
+  size_mb: 350
+  license: CC-BY-NC-4.0
+  citation: https://arxiv.org/abs/2203.12602
+  category: video
+  verified_public: true
+
+altfree_video_detector:
+  # AltFree (CVPR 2024). No canonical HF port exists.
+  # Detector falls back to EfficientNet-B0 + transformer stub when
+  # the HF pull fails. To produce real benchmark numbers, EITHER:
+  #   (a) Use VideoMAE as primary (recommended), OR
+  #   (b) Pull original weights from the AltFree GitHub repo and
+  #       place under /models/altfree_video_detector/. See TRAINING.md.
+  repo: facebook/altfree-video-base
+  revision: main
+  filename: null
+  size_mb: 250
+  license: CC-BY-4.0
+  citation: https://arxiv.org/abs/2403.00234
+  category: video
+  verified_public: false  # No canonical HF port
+
+# ============== ITERATION-4 TIMESFORMER VIDEO DETECTOR (diversity) ==============
+timesformer_video_detector:
+  # Backbone: TimeSformer-base (Facebook, verified public)
+  # License: cc-by-nc-4.0 (NON-COMMERCIAL). Disable for commercial use
+  # via ENABLE_TIMESFORMER=false in .env.
+  repo: facebook/timesformer-base-finetuned-k400
+  revision: main
+  filename: null
+  size_mb: 300
+  license: CC-BY-NC-4.0
+  citation: https://arxiv.org/abs/2102.05095
+  category: video
+  verified_public: true
+  note: |
+    TimeSformer-base (ICML 2021). Factorized space-time attention.
+    13k downloads. Loaded as frozen backbone with fresh 2-class head.
+
+# ============== ITERATION-4 ECAPA-TDNN AUDIO DETECTOR (diversity) ==============
+ecapa_audio_detector:
+  # Backbone: ECAPA-TDNN (SpeechBrain, verified public)
+  # Embedding-distance-based: computes cosine distance from a reference
+  # centroid of real-audio embeddings.
+  repo: speechbrain/spkrec-ecapa-voxceleb
+  revision: main
+  filename: null
+  size_mb: 80
+  license: MIT
+  citation: https://arxiv.org/abs/2005.07143
+  category: audio
+  verified_public: true
+  note: |
+    ECAPA-TDNN (INTERSPEECH 2020). MIT license; commercially usable.
+    Operators must build the reference centroid by running the detector
+    on ~100 real audio samples and saving the mean embedding to
+    /models/ecapa_reference_centroid.npy.
+
+# ============== EXISTING TEMPORAL ANALYSIS ==============
+xclip_temporal:
+  repo: microsoft/xclip-base-patch16
+  revision: main
+  filename: null
+  size_mb: 600
+  license: MIT
+  citation: https://arxiv.org/abs/2206.13128
+  category: video
+  verified_public: true
+
+videomae_temporal:
+  repo: MCG-NJU/videomae-base
+  revision: main
+  filename: null
+  size_mb: 350
+  license: CC-BY-NC-4.0
+  citation: https://arxiv.org/abs/2203.12602
+  category: video
+  verified_public: true

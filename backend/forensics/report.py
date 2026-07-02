@@ -111,6 +111,16 @@ class ReportGenerator:
     
     VERSION = "1.0.0"
     
+    @staticmethod
+    def _safe_para(text, style):
+        """Escape user-controlled text before creating a ReportLab Paragraph.
+        
+        H6 fix: prevents XML/markup injection in court-admissible PDFs.
+        """
+        from xml.sax.saxutils import escape as _xml_escape
+        from reportlab.platypus import Paragraph
+        return Paragraph(_xml_escape(str(text or "")), style)
+    
     def __init__(self, config: Optional[ReportConfig] = None):
         """
         Initialize report generator.
@@ -170,6 +180,7 @@ class ReportGenerator:
         )
         from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
         from reportlab.pdfbase import pdfmetrics
+
         from reportlab.pdfbase.ttfonts import TTFont
         
         # Create PDF buffer
@@ -299,13 +310,13 @@ class ReportGenerator:
         
         # Explanation
         if analysis.explanation:
-            story.append(Paragraph(analysis.explanation.summary, body_style))
+            story.append(self._safe_para(analysis.explanation.summary, body_style))
             story.append(Spacer(1, 10))
             
             if analysis.explanation.key_findings:
                 story.append(Paragraph("<b>Key Findings:</b>", body_style))
                 findings_items = [
-                    ListItem(Paragraph(finding, body_style))
+                    ListItem(self._safe_para(finding, body_style))
                     for finding in analysis.explanation.key_findings
                 ]
                 story.append(ListFlowable(findings_items, bulletType='bullet', start='-'))
@@ -731,7 +742,7 @@ class ReportGenerator:
             elements.append(Spacer(1, 10))
             elements.append(Paragraph("<b>EXIF Anomalies Detected:</b>", body_style))
             anomaly_items = [
-                ListItem(Paragraph(anomaly, body_style))
+                ListItem(self._safe_para(anomaly, body_style))
                 for anomaly in metadata_result.exif_anomalies
             ]
             elements.append(ListFlowable(anomaly_items, bulletType='bullet', start='-'))

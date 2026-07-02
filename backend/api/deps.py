@@ -756,10 +756,13 @@ class RateLimiter:
     This is primarily for testing and development.
     """
     
+    MAX_BUCKETS = 10000  # Maximum number of unique keys to track
+    
     def __init__(self, max_requests: int = 100, window_seconds: int = 60):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self._requests: dict = {}
+        self._access_count: int = 0  # Track total accesses for eviction
     
     def is_allowed(self, key: str) -> bool:
         """Check if request is allowed under rate limit."""
@@ -782,7 +785,24 @@ class RateLimiter:
         
         # Record request
         self._requests[key].append(current_time)
+        
+        # Periodically evict stale keys (empty windows)
+        self._access_count += 1
+        if self._access_count % 1000 == 0:
+            self._evict_stale_keys(window_start)
+        
         return True
+    
+    def _evict_stale_keys(self, window_start: float) -> None:
+        """Remove keys with no recent requests to prevent memory growth."""
+        stale_keys = [
+            k for k, v in self._requests.items()
+            if not v or (v and v[-1] <= window_start)
+        ]
+        for k in stale_keys:
+            del self._requests[k]
+        if stale_keys:
+            logger.debug(f"Evicted {len(stale_keys)} stale rate limit buckets")
 
 
 _rate_limiter: Optional[RateLimiter] = None
@@ -1005,56 +1025,60 @@ async def startup_dependencies() -> None:
         manager = get_model_manager()
         logger.info("Inference engine initialized")
         
-        # Warmup critical models for immediate availability
-        logger.info("="*60)
-        logger.info("DOWNLOADING & LOADING AI MODELS...")
-        logger.info("="*60)
-        
-        critical_models = [
-            "deepfake_detector_v3",  # Primary deepfake image detection model
-            "retinaface",
-            "purdue_m2",
-            "clip_vit_b16",
-            "xclip_temporal"
-        ]
-        
-        warmup_start = asyncio.get_event_loop().time()
-        successfully_loaded = 0
-        failed_models = []
-        
-        for model_name in critical_models:
-            try:
-                logger.info(f"Loading model: {model_name}...")
-                await engine.warmup_model(model_name)
-                successfully_loaded += 1
-                logger.info(f"  ✓ {model_name} - READY")
-            except Exception as e:
-                failed_models.append(model_name)
-                logger.warning(f"  ✗ {model_name} - FAILED: {str(e)[:100]}")
-        
-        warmup_time = asyncio.get_event_loop().time() - warmup_start
-        
-        # Log summary
-        logger.info("="*60)
-        logger.info(f"MODEL LOADING SUMMARY:")
-        logger.info(f"  • Successfully loaded: {successfully_loaded}/{len(critical_models)} models")
-        logger.info(f"  • Total time: {warmup_time:.2f}s")
-        
-        if failed_models:
-            logger.error(f"  • Failed models: {', '.join(failed_models)}")
-            logger.error(f"  • Critical models failed to load - application may not function correctly")
-            logger.error(f"  • Ensure model weights are downloaded. Check AUTO_START_CONFIGURATION.md")
-        
-        # Log VRAM usage
-        loaded = manager.get_loaded_models()
-        vram_used = manager.get_vram_usage()
-        vram_available = manager.get_available_vram()
-        
-        logger.info(f"VRAM STATUS:")
-        logger.info(f"  • Used: {vram_used}MB")
-        logger.info(f"  • Available: {vram_available}MB")
-        logger.info(f"  • Loaded models: {', '.join(loaded) if loaded else 'None'}")
-        logger.info("="*60)
+        # Skip model warmup if disabled via env
+        skip_warmup = os.environ.get("SKIP_MODEL_WARMUP", "").lower() in ("true", "1", "yes")
+        if skip_warmup:
+            logger.info("SKIP_MODEL_WARMUP=true — skipping model loading")
+        else:
+            # Warmup critical models for immediate availability
+            logger.info("="*60)
+            logger.info("DOWNLOADING & LOADING AI MODELS...")
+            logger.info("="*60)
+            
+            critical_models = [
+                "deepfake_detector_v3",  # Primary deepfake image detection model
+                "retinaface",
+                "clip_vit_b16",
+                "xclip_temporal"
+            ]
+            
+            warmup_start = asyncio.get_event_loop().time()
+            successfully_loaded = 0
+            failed_models = []
+            
+            for model_name in critical_models:
+                try:
+                    logger.info(f"Loading model: {model_name}...")
+                    await engine.warmup_model(model_name)
+                    successfully_loaded += 1
+                    logger.info(f"  ✓ {model_name} - READY")
+                except Exception as e:
+                    failed_models.append(model_name)
+                    logger.warning(f"  ✗ {model_name} - FAILED: {str(e)[:100]}")
+            
+            warmup_time = asyncio.get_event_loop().time() - warmup_start
+            
+            # Log summary
+            logger.info("="*60)
+            logger.info(f"MODEL LOADING SUMMARY:")
+            logger.info(f"  • Successfully loaded: {successfully_loaded}/{len(critical_models)} models")
+            logger.info(f"  • Total time: {warmup_time:.2f}s")
+            
+            if failed_models:
+                logger.error(f"  • Failed models: {', '.join(failed_models)}")
+                logger.error(f"  • Critical models failed to load - application may not function correctly")
+                logger.error(f"  • Ensure model weights are downloaded. Check AUTO_START_CONFIGURATION.md")
+            
+            # Log VRAM usage
+            loaded = manager.get_loaded_models()
+            vram_used = manager.get_vram_usage()
+            vram_available = manager.get_available_vram()
+            
+            logger.info(f"VRAM STATUS:")
+            logger.info(f"  • Used: {vram_used}MB")
+            logger.info(f"  • Available: {vram_available}MB")
+            logger.info(f"  • Loaded models: {', '.join(loaded) if loaded else 'None'}")
+            logger.info("="*60)
         
     except Exception as e:
         logger.error(f"Inference engine initialization failed: {e}", exc_info=True)

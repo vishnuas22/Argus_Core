@@ -1,0 +1,37 @@
+# ============================================================
+# Argus Core - Development Override
+# ============================================================
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Mounts backend source code + enables hot-reload so changes
+# take effect without rebuilding the image.
+# ============================================================
+
+services:
+  backend:
+    build:
+      args:
+        BUILD_DEV: "true"
+    volumes:
+      # Mount source code (overrides COPY from image)
+      - ./backend/analyzers:/app/analyzers
+      - ./backend/core:/app/core
+      - ./backend/server.py:/app/server.py
+      - ./backend/models/downloader.py:/app/models/downloader.py
+      - ./backend/models/model_downloader.py:/app/models/model_downloader.py
+      - ./backend/models/registry.py:/app/models/registry.py
+      - ./backend/requirements.txt:/app/requirements.txt
+    command: uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      DEBUG: "true"
+      LOG_LEVEL: DEBUG
+
+  celery-worker:
+    volumes:
+      - ./backend/analyzers:/app/analyzers
+      - ./backend/core:/app/core
+      - ./backend/server.py:/app/server.py
+      - ./backend/models/downloader.py:/app/models/downloader.py
+      - ./backend/models/model_downloader.py:/app/models/model_downloader.py
+      - ./backend/models/registry.py:/app/models/registry.py
+      - ./backend/requirements.txt:/app/requirements.txt

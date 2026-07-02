@@ -30,7 +30,7 @@ import numpy as np
 from dataclasses import dataclass, field
 import time
 
-from analyzers.base import BaseAnalyzer, aggregate_scores, compute_confidence, detect_anomalies
+from analyzers.base import BaseAnalyzer
 from analyzers.video.spatial import SpatialAnalyzer, get_spatial_analyzer
 from analyzers.video.temporal import TemporalAnalyzer, get_temporal_analyzer
 from analyzers.video.lipsync import LipSyncAnalyzer, get_lipsync_analyzer
@@ -567,14 +567,14 @@ class VideoAnalyzer(BaseAnalyzer):
                 )
             elif task_name == "temporal":
                 return TemporalResult(
-                    consistency_score=1.0,
+                    consistency_score=0.5,
                     flickering_detected=False,
                     anomaly_timestamps=[]
                 )
             else:  # lipsync
                 return LipSyncResult(
-                    sync_score=1.0,
-                    manipulation_probability=0.0,
+                    sync_score=0.5,
+                    manipulation_probability=0.5,
                     detected_technology=None
                 )
         
@@ -789,7 +789,7 @@ class VideoAnalyzer(BaseAnalyzer):
                 heatmap_urls=[]
             ),
             temporal=TemporalResult(
-                consistency_score=1.0,
+                consistency_score=0.5,
                 flickering_detected=False,
                 anomaly_timestamps=[]
             ),
