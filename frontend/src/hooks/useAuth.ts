@@ -60,8 +60,8 @@ export function useAuth() {
       const currentToken = localStorage.getItem(STORAGE_KEYS.authToken);
       if (!currentToken) return false;
 
-      const response = await api.post<AuthToken>('/api/v1/auth/refresh', {
-        current_token: currentToken,
+      const response = await api.post<AuthToken>('/api/v1/auth/refresh', null, {
+        headers: { Authorization: `Bearer ${currentToken}` },
       });
 
       const token = response.data;

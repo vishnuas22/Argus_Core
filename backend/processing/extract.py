@@ -12,7 +12,6 @@ Capabilities:
 - Smart keyframe sampling
 """
 
-import io
 import subprocess
 import tempfile
 import os
@@ -290,10 +289,10 @@ class MediaExtractor:
         confidence_threshold: float = 0.8
     ) -> List[FaceDetection]:
         """
-        Detect faces in frame using RetinaFace.
+        Detect faces in frame.
         
-        Note: OpenCV Haar cascade fallback is disabled due to SIGSEGV issues
-        in forked Celery worker processes on macOS.
+        Falls back to OpenCV Haar cascade when RetinaFace Python package
+        is unavailable. Haar cascade is safe in Docker/Linux environments.
         """
         detections = []
         
@@ -304,11 +303,13 @@ class MediaExtractor:
                     from retinaface import RetinaFace
                     self._face_detector = RetinaFace
                 except ImportError:
-                    logger.warning("RetinaFace not available, skipping face detection")
-                    self._face_detector = "skip"
+                    logger.info("RetinaFace not available, falling back to OpenCV Haar cascade")
+                    self._face_detector = "haar_cascade"
+            
+            if self._face_detector == "haar_cascade":
+                return self._detect_faces_haar(frame)
             
             if self._face_detector == "skip":
-                # Skip face detection entirely - analysis can proceed without it
                 return detections
             
             if self._face_detector != "opencv":
@@ -329,6 +330,47 @@ class MediaExtractor:
             logger.warning(f"Face detection failed: {e}")
         
         return detections
+    
+    def _detect_faces_haar(
+        self, frame: np.ndarray
+    ) -> List[FaceDetection]:
+        """OpenCV Haar cascade face detection fallback."""
+        import cv2
+        
+        try:
+            if not hasattr(self, '_haar_cascade'):
+                cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                self._haar_cascade = cv2.CascadeClassifier(cascade_path)
+            
+            if self._haar_cascade.empty():
+                return []
+            
+            gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            faces = self._haar_cascade.detectMultiScale(
+                gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+            )
+            
+            detections = []
+            for x, y, w, h in faces:
+                # Derive approximate landmarks from bounding box
+                landmarks = {
+                    "left_eye": (x + w * 0.35, y + h * 0.35),
+                    "right_eye": (x + w * 0.65, y + h * 0.35),
+                    "nose": (x + w * 0.50, y + h * 0.55),
+                    "mouth_left": (x + w * 0.30, y + h * 0.75),
+                    "mouth_right": (x + w * 0.70, y + h * 0.75),
+                }
+                detections.append(FaceDetection(
+                    bbox=(x, y, x + w, y + h),
+                    confidence=0.9,
+                    landmarks=landmarks,
+                ))
+            
+            return detections
+            
+        except Exception as e:
+            logger.debug("Haar cascade face detection failed: %s", e)
+            return []
     
     def _crop_face(
         self,

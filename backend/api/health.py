@@ -31,8 +31,12 @@ async def _get_redis_pool():
 
 async def check_database(db) -> Dict[str, Any]:
     try:
-        await db.db.command("ping")
+        async with asyncio.timeout(10):
+            await db.db.command("ping")
         return {"status": "healthy"}
+    except asyncio.TimeoutError:
+        logger.warning("Database health check timed out")
+        return {"status": "unhealthy: timeout"}
     except Exception as e:
         logger.warning(f"Database health check failed: {e}")
         return {"status": f"unhealthy: {str(e)}"}
@@ -55,8 +59,12 @@ async def check_storage(storage) -> Dict[str, Any]:
 async def check_redis() -> Dict[str, Any]:
     try:
         client = await _get_redis_pool()
-        await client.ping()
+        async with asyncio.timeout(5):
+            await client.ping()
         return {"status": "healthy"}
+    except asyncio.TimeoutError:
+        logger.warning("Redis health check timed out")
+        return {"status": "unhealthy: timeout"}
     except Exception as e:
         logger.warning(f"Redis health check failed: {e}")
         return {"status": f"unhealthy: {str(e)}"}

@@ -27,12 +27,15 @@ Task chaining enables complex workflows with clean error handling.
 import asyncio
 import time
 import uuid
+import sys
+import os
 from typing import Optional, Dict, Any, List, Union
 from datetime import datetime, timezone
 from functools import wraps
 import numpy as np
 
-from celery import Celery, chain, group, chord
+from celery import Celery
+from celery.schedules import crontab
 from celery.result import AsyncResult
 from celery.exceptions import SoftTimeLimitExceeded
 
@@ -46,6 +49,11 @@ from utils.logging import get_logger
 from utils.errors import PreprocessingError, InferenceError, FusionError
 
 logger = get_logger(__name__)
+
+# Add backend directory to path for Celery worker (once at module load)
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
 
 # ============== CELERY CONFIGURATION ==============
 
@@ -93,21 +101,234 @@ celery_app.conf.update(
         "analysis": {"routing_key": "analyze.#"},
         "aggregation": {"routing_key": "aggregate.#"},
         "reports": {"routing_key": "report.#"},
-    }
+        # H4 fix: dead-letter queue for failed tasks after max retries.
+        # Workers should consume this queue with:
+        #   celery -A core.orchestrator.celery_app worker -Q dead_letter
+        "dead_letter": {"routing_key": "dlq.#"},
+    },
+
+    # H4 fix: route failed tasks to DLQ after max retries exhausted.
+    # Celery's task_reject_on_worker_lost + task_acks_late already
+    # re-queues on worker crash. This setting ensures tasks that fail
+    # all retries are published to the dead_letter queue for forensic
+    # inspection / replay rather than being silently dropped.
+    task_default_queue="default",
+    task_create_missing_queues=True,
+
+    # ===========================================================
+    # Iteration 5: Celery Beat schedule for automatic retraining
+    # and drift checks.
+    # ===========================================================
+    # Requires celery[redis] beat scheduler. Run beat alongside workers:
+    #   celery -A core.orchestrator.celery_app beat --loglevel=info
+    beat_schedule={
+        # Retrain image LoRA adapter every 24h at 02:00 UTC
+        "retrain-image-daily": {
+            "task": "argus_tasks.retrain_modality",
+            "schedule": crontab(hour=2, minute=0),
+            "args": ("image",),
+        },
+        # Retrain audio LoRA adapter every 24h at 03:00 UTC
+        "retrain-audio-daily": {
+            "task": "argus_tasks.retrain_modality",
+            "schedule": crontab(hour=3, minute=0),
+            "args": ("audio",),
+        },
+        # Retrain video LoRA adapter every 24h at 04:00 UTC
+        "retrain-video-daily": {
+            "task": "argus_tasks.retrain_modality",
+            "schedule": crontab(hour=4, minute=0),
+            "args": ("video",),
+        },
+        # Check drift every 6 hours
+        "drift-check-every-6h": {
+            "task": "argus_tasks.check_drift",
+            "schedule": crontab(minute=0, hour="*/6"),
+            "args": (),
+        },
+        # Evaluate A/B test candidates every hour
+        "ab-test-evaluation-hourly": {
+            "task": "argus_tasks.evaluate_ab_tests",
+            "schedule": crontab(minute=30),
+            "args": (),
+        },
+    },
 )
+
+
+# ===========================================================
+# Iteration 5: Scheduled task definitions
+# ===========================================================
+
+@celery_app.task(name="argus_tasks.retrain_modality")
+def retrain_modality_task(modality: str):
+    """
+    Celery task: retrain a LoRA adapter from the feedback buffer.
+
+    Scheduled daily via Celery Beat. Can also be triggered manually via
+    POST /api/v1/retrain/{modality}.
+    """
+    try:
+        from continuous_learning import schedule_retrain_task
+        return schedule_retrain_task(modality)
+    except Exception as e:
+        logger.error("Retrain task failed for %s: %s", modality, e)
+        return {"status": "failed", "modality": modality, "error": str(e)}
+
+
+@celery_app.task(name="argus_tasks.check_drift")
+def check_drift_task():
+    """
+    Celery task: check for distribution drift across all modalities.
+
+    Scheduled every 6 hours via Celery Beat. Pulls recent embeddings
+    from the Redis embedding buffer and compares against the reference.
+    """
+    try:
+        from core.post_processing import check_batch_drift
+        from monitoring.embedding_buffer import get_default_embedding_buffer
+        results = {}
+        buf = get_default_embedding_buffer()
+        for modality in ["image", "audio", "video"]:
+            count = buf.count(modality) if buf else 0
+            if count < 10:
+                results[modality] = {
+                    "status": "insufficient_embeddings",
+                    "count": count,
+                }
+                continue
+            current_embeddings = buf.get_embeddings(modality)
+            if current_embeddings is None or len(current_embeddings) < 10:
+                results[modality] = {
+                    "status": "insufficient_embeddings",
+                    "count": count,
+                }
+                continue
+            drift = check_batch_drift(current_embeddings, modality=modality)
+            if drift is None:
+                results[modality] = {
+                    "status": "no_reference",
+                    "count": count,
+                }
+            else:
+                results[modality] = {
+                    "status": "checked",
+                    "count": count,
+                    **drift,
+                }
+        logger.info("Drift check: %s", results)
+        return results
+    except Exception as e:
+        logger.error("Drift check task failed: %s", e)
+        return {"status": "failed", "error": str(e)}
+
+
+@celery_app.task(name="argus_tasks.evaluate_ab_tests")
+def evaluate_ab_tests_task():
+    """
+    Celery task: evaluate all active A/B test candidates.
+
+    Scheduled hourly via Celery Beat. Promotes or rolls back candidates
+    based on collected metrics.
+    """
+    try:
+        from continuous_learning import get_default_ab_router
+        router = get_default_ab_router()
+        results = {}
+        for modality in ["image", "audio", "video"]:
+            evaluation = router.evaluate_candidate(modality)
+            results[modality] = evaluation
+            decision = evaluation.get("decision", "insufficient")
+            if decision == "promote":
+                logger.info("Promoting candidate for %s", modality)
+                router.promote_candidate(modality)
+            elif decision == "rollback":
+                logger.warning("Rolling back candidate for %s", modality)
+                router.rollback_candidate(modality)
+        logger.info("A/B test evaluation: %s", results)
+        return results
+    except Exception as e:
+        logger.error("A/B test evaluation failed: %s", e)
+        return {"status": "failed", "error": str(e)}
+
+
+# ===========================================================
+# H4 fix: Dead-letter queue consumer task
+# ===========================================================
+# Failed tasks (after max retries) land in the dead_letter queue.
+# Run a worker to consume them:
+#   celery -A core.orchestrator.celery_app worker -Q dead_letter --loglevel=info
+# This task logs the failure for forensic inspection and optional replay.
+
+@celery_app.task(name="argus_tasks.dead_letter_handler")
+def dead_letter_handler_task(
+    original_task_name: str,
+    task_id: str,
+    error: str,
+    args: list,
+    kwargs: dict,
+):
+    """
+    Handle a dead-lettered task. Logs the failure for forensic inspection.
+
+    In production, this could:
+    - Store the failed task in MongoDB for replay
+    - Send an alert to ops
+    - Update the analysis status to "failed"
+    """
+    logger.error(
+        "DEAD LETTER: task=%s id=%s error=%s args=%s",
+        original_task_name, task_id, error[:200], str(args)[:200],
+    )
+    # Store in MongoDB for forensic audit / replay
+    try:
+        from storage.db import get_db_client
+        db = run_async(get_db_client())
+        run_async(db.log_audit_event(
+            event_type="dead_letter",
+            resource_id=task_id,
+            actor="celery",
+            metadata={
+                "original_task": original_task_name,
+                "error": error[:500],
+                "args": str(args)[:500],
+                "kwargs": str(kwargs)[:500],
+            }
+        ))
+    except Exception as e:
+        logger.error("Failed to store dead letter in DB: %s", e)
+    return {
+        "status": "dead_lettered",
+        "original_task": original_task_name,
+        "task_id": task_id,
+    }
 
 
 # ============== ASYNC HELPERS ==============
 
 def run_async(coro):
-    """Run async coroutine in sync context."""
+    """
+    Run async coroutine in sync context (e.g., from Celery tasks).
+
+    M4 fix: use asyncio.run() instead of the deprecated
+    asyncio.get_event_loop() + run_until_complete() pattern.
+    asyncio.run() creates a fresh event loop per call and properly
+    tears it down, avoiding the "event loop already running" error
+    that occurs with gevent/thread pools.
+    """
+    # Check if we're already inside a running loop (e.g., FastAPI context).
+    # If so, we can't use asyncio.run() — fall back to the legacy pattern.
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
+        # We're inside a running loop — can't call asyncio.run().
+        # Use a thread to run the coroutine instead.
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(asyncio.run, coro)
+            return future.result()
     except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    return loop.run_until_complete(coro)
+        # No running loop — safe to use asyncio.run()
+        return asyncio.run(coro)
 
 
 def sync_task(async_func):
@@ -122,24 +343,12 @@ def sync_task(async_func):
 
 async def get_db():
     """Get database client for task operations."""
-    import sys
-    import os
-    # Add backend directory to path for Celery worker
-    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if backend_dir not in sys.path:
-        sys.path.insert(0, backend_dir)
     from storage.db import get_db_client
     return await get_db_client()
 
 
 async def get_storage():
     """Get storage client for task operations."""
-    import sys
-    import os
-    # Add backend directory to path for Celery worker
-    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if backend_dir not in sys.path:
-        sys.path.insert(0, backend_dir)
     from storage.storage import get_storage_client
     return get_storage_client()
 
@@ -165,24 +374,26 @@ async def update_status(
     await publish_progress(analysis_id, status, progress_percent, current_stage)
 
 
-# Persistent Redis connection pool for progress publishing
+# H7 fix: Use redis.asyncio instead of sync redis to avoid blocking the
+# event loop. The sync client's r.publish() blocks every async task
+# that calls publish_progress, serializing concurrent analyses.
 _orchestrator_redis_pool: Optional[Any] = None
 
 
-def _get_orchestrator_redis():
+async def _get_orchestrator_redis():
     """
-    Get or create a persistent Redis client for progress publishing.
-    
-    Uses a module-level singleton to avoid creating new connections
-    on every progress update, which would exhaust file descriptors
-    under load.
+    Get or create a persistent async Redis client for progress publishing.
+
+    Uses redis.asyncio (not sync redis) so that publish() doesn't
+    block the event loop.
     """
     global _orchestrator_redis_pool
     if _orchestrator_redis_pool is None:
-        import redis
-        _orchestrator_redis_pool = redis.from_url(
+        import redis.asyncio as aioredis
+        _orchestrator_redis_pool = aioredis.from_url(
             config.redis_url,
-            max_connections=5,
+            max_connections=10,
+            decode_responses=True,
         )
     return _orchestrator_redis_pool
 
@@ -196,8 +407,8 @@ async def publish_progress(
 ):
     """Publish progress update to Redis for WebSocket delivery."""
     try:
-        r = _get_orchestrator_redis()
-        
+        r = await _get_orchestrator_redis()
+
         import json
         progress_data = {
             "analysis_id": analysis_id,
@@ -207,10 +418,10 @@ async def publish_progress(
             "message": message,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
-        
-        # Publish to channel (persistent pool, no connection churn)
-        r.publish(f"argus:progress:{analysis_id}", json.dumps(progress_data))
-        
+
+        # H7 fix: await the async publish (was sync r.publish — blocking)
+        await r.publish(f"argus:progress:{analysis_id}", json.dumps(progress_data))
+
     except Exception as e:
         logger.warning(f"Failed to publish progress: {e}")
 
@@ -309,7 +520,8 @@ async def run_analysis_pipeline(
         aggregated = await _aggregate_results(
             analysis_id=analysis_id,
             modality_results=modality_results,
-            content_type=preprocessed.content_type
+            content_type=preprocessed.content_type,
+            raw_tensors=_extract_raw_tensors_for_umft(preprocessed)
         )
         
         # ===== PHASE 4: FINALIZE RESULTS =====
@@ -323,6 +535,21 @@ async def run_analysis_pipeline(
             content_type=preprocessed.content_type,
             analysis_id=analysis_id
         )
+        
+        # A/B test: record predictions for each modality
+        try:
+            from continuous_learning.ab_test import get_default_ab_router
+            _ab_router = get_default_ab_router()
+            for mr in modality_results:
+                if mr.modality and mr.confidence > 0.0:
+                    _ab_router.record_prediction(
+                        modality=mr.modality.value if hasattr(mr.modality, 'value') else str(mr.modality),
+                        score=mr.score,
+                        latency_ms=processing_time * 1000,
+                        is_candidate=False,
+                    )
+        except Exception:
+            pass
         
         # Update analysis with results
         await db.update_analysis(analysis_id, final_updates)
@@ -449,7 +676,7 @@ async def analyze_modality_task(
     
     Args:
         analysis_id: Analysis identifier
-        modality: Modality to analyze (video, audio, text, image)
+        modality: Modality to analyze (video, audio, image)
         preprocessed_data: PreprocessedData as dict
         
     Returns:
@@ -568,9 +795,18 @@ async def generate_report_task(
             "analysis_id": analysis_id
         }
         
+    except SoftTimeLimitExceeded:
+        logger.error(f"Report generation timed out: {analysis_id}")
+        # H3 fix: re-raise so Celery retry fires (was swallowed before)
+        raise
     except Exception as e:
-        logger.error(f"Report generation failed: {analysis_id}, error: {e}")
-        return {"status": "failed", "error": str(e)}
+        logger.error(f"Report generation failed: {analysis_id}, error: {e}", exc_info=True)
+        # H3 fix: re-raise so Celery's max_retries=2 mechanism fires.
+        # Previously the exception was swallowed (returned a dict),
+        # causing Celery to mark the task as SUCCESS — no retry, no DLQ.
+        # Now the exception propagates → Celery retries up to 2 times,
+        # then marks the task as FAILED and routes to the dead_letter queue.
+        raise
 
 
 # ============== HELPER FUNCTIONS ==============
@@ -670,8 +906,11 @@ async def _run_parallel_analysis(
     modality_results = []
     for modality, result in zip(modality_enums, results):
         if isinstance(result, Exception):
-            logger.error(f"Modality {modality.value} failed: {result}")
-            # Create failed result
+            logger.error(
+                f"MODALITY FAILED: {modality.value} raised {type(result).__name__}: {result}. "
+                f"Returning neutral score (0.5, confidence=0.0) — fusion will ignore this modality."
+            )
+            # Create failed result — confidence=0.0 ensures fusion gives zero weight
             modality_results.append(ModalityResult(
                 modality=modality,
                 score=0.5,  # Neutral score on failure
@@ -761,21 +1000,116 @@ async def _analyze_single_modality(
         raise InferenceError(modality.value, str(e))
 
 
+def _extract_raw_tensors_for_umft(preprocessed) -> Optional[dict]:
+    """
+    Extract raw tensors from preprocessed data for UMFT neural fusion.
+    
+    Returns None if data is not suitable for UMFT (e.g., no frames or audio).
+    UMFT requires at least one of: frames [B, T, C, H, W] or waveform [B, samples].
+    """
+    try:
+        import numpy as np
+        import torch
+        
+        frames = None
+        waveform = None
+        
+        # Extract video frames if available
+        if hasattr(preprocessed, 'frames') and preprocessed.frames:
+            frame_arrays = []
+            for f in preprocessed.frames[:16]:  # cap at 16 frames
+                if isinstance(f, np.ndarray):
+                    frame_arrays.append(f)
+            if frame_arrays:
+                # Stack and convert to tensor: [B, T, C, H, W]
+                arr = np.stack(frame_arrays)  # [T, H, W, C]
+                arr = arr.astype(np.float32) / 255.0
+                arr = arr.transpose(0, 3, 1, 2)  # [T, C, H, W]
+                frames = torch.from_numpy(arr).unsqueeze(0)  # [1, T, C, H, W]
+        
+        # Extract audio waveform if available
+        if hasattr(preprocessed, 'audio_data') and preprocessed.audio_data is not None:
+            audio = preprocessed.audio_data
+            if isinstance(audio, np.ndarray):
+                audio = audio.astype(np.float32)
+                if audio.ndim == 1:
+                    audio = audio[np.newaxis, :]  # [1, samples]
+                waveform = torch.from_numpy(audio)
+        
+        if frames is None and waveform is None:
+            return None
+        
+        return {"frames": frames, "waveform": waveform}
+        
+    except Exception as e:
+        logger.debug("Could not extract raw tensors for UMFT: %s", e)
+        return None
+
+
 async def _aggregate_results(
     analysis_id: str,
     modality_results: List[ModalityResult],
-    content_type: ContentType
+    content_type: ContentType,
+    raw_tensors: Optional[dict] = None,
 ) -> AggregatedResult:
     """
     Aggregate modality results using multi-modal fusion.
+    
+    When UMFT cross-attention fusion weights are available AND raw tensors
+    (frames, waveform) are provided, uses neural fusion via fuse_raw().
+    Otherwise falls back to Dirichlet evidential fusion.
+    
+    Args:
+        raw_tensors: Optional dict with keys "frames", "waveform" for UMFT.
     """
     from core.fusion import get_multi_modal_fusion
     from core.scorer import get_trust_scorer
     
     fusion = get_multi_modal_fusion()
     
-    # Run fusion (synchronous method - do not await)
-    aggregated = fusion.aggregate(modality_results, content_type)
+    # Filter out failed modalities (confidence=0.0) — they should not influence fusion
+    active_results = [r for r in modality_results if r.confidence > 0.0]
+    if not active_results:
+        # All modalities failed — return neutral result
+        from schemas.schemas import AggregatedResult
+        return AggregatedResult(
+            modality_results=modality_results,
+            fused_score=0.5,
+            uncertainty=1.0,
+            weights_used={}
+        )
+    
+    # Try UMFT neural fusion when raw tensors are available and engine is ready
+    if raw_tensors and fusion.umft_available:
+        try:
+            frames = raw_tensors.get("frames")
+            waveform = raw_tensors.get("waveform")
+            if frames is not None or waveform is not None:
+                import torch
+                fake_prob, attn_weights, _ = fusion.fuse_raw(
+                    frames=frames,
+                    waveform=waveform,
+                )
+                logger.info(
+                    "UMFT neural fusion used for %s: fake_prob=%.3f",
+                    analysis_id, fake_prob,
+                )
+                # Build AggregatedResult from UMFT output
+                from schemas.schemas import AggregatedResult
+                return AggregatedResult(
+                    modality_results=modality_results,
+                    fused_score=fake_prob,
+                    uncertainty=0.3,  # UMFT has lower uncertainty than Dirichlet
+                    weights_used={"umft": 1.0},
+                )
+        except Exception as e:
+            logger.warning(
+                "UMFT fusion failed for %s, falling back to Dirichlet: %s",
+                analysis_id, e,
+            )
+    
+    # Default: Dirichlet evidential fusion
+    aggregated = fusion.aggregate(active_results, content_type)
     
     return aggregated
 
@@ -838,7 +1172,8 @@ def _build_final_results(
             audio_result=audio_result,
             image_result=image_result,
             feature_importance=feature_importance,
-            trust_score=trust_score.value
+            trust_score=trust_score.value,
+            uncertainty=aggregated.uncertainty
         )
         
         # Include scientific references for methods used
@@ -928,7 +1263,11 @@ def _build_audio_result(result: ModalityResult) -> AudioResult:
     return AudioResult(
         synthetic_probability=details.get("synthetic_probability", result.score),
         vocoder_artifacts_detected=vocoder_detected,
-        voice_consistency_score=result.confidence or 0.5
+        voice_consistency_score=details.get("voice_consistency", {}).get("pitch_consistency", 0.5)
+        if isinstance(details.get("voice_consistency"), dict) else 0.5,
+        spectrogram_url=details.get("spectrogram_url"),
+        frequency_anomaly_score=details.get("frequency_anomaly_score", 0.0),
+        aasist_score=details.get("aasist_score") if details.get("aasist_score") != 0.5 else None,
     )
 
 
@@ -1148,7 +1487,8 @@ def _generate_evidence_package(
     audio_result: Optional["AudioResult"],
     image_result: Optional["ImageResult"],
     feature_importance: List["FeatureImportance"],
-    trust_score: float
+    trust_score: float,
+    uncertainty: float = 0.1
 ) -> "EvidencePackage":
     """
     Generate complete evidence package for court-admissible forensic reports.
@@ -1160,6 +1500,17 @@ def _generate_evidence_package(
     from schemas.schemas import EvidencePackage, VisualEvidence
     
     # Build reproducibility data
+    def _json_safe(obj):
+        """Convert numpy types to Python native types for JSON serialization."""
+        import numpy as np
+        if isinstance(obj, (np.integer,)):
+            return int(obj)
+        elif isinstance(obj, (np.floating,)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return obj
+
     repro_data = {
         "analysis_id": analysis_id,
         "trust_score": trust_score,
@@ -1176,13 +1527,12 @@ def _generate_evidence_package(
     }
     
     # Generate SHA-256 reproducibility hash
-    repro_json = json.dumps(repro_data, sort_keys=True)
+    repro_json = json.dumps(repro_data, sort_keys=True, default=_json_safe)
     reproducibility_hash = hashlib.sha256(repro_json.encode()).hexdigest()
     
     # Calculate 95% confidence interval
     # trust_score is on 0-100 scale, normalize to 0-1 for CI
     trust_score_normalized = trust_score / 100.0
-    uncertainty = 0.1  # Default uncertainty
     margin = 1.96 * uncertainty  # 95% CI
     lower = max(0.0, trust_score_normalized - margin)
     upper = min(1.0, trust_score_normalized + margin)

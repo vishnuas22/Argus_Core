@@ -7,29 +7,10 @@ Handles background processing tasks like video analysis,
 model inference, and report generation.
 """
 
-from celery import Celery
-from config import config
-import os
+from core.orchestrator import celery_app  # Use single canonical Celery app
+from utils.logging import get_logger
 
-# Initialize Celery app
-celery_app = Celery(
-    "argus_tasks",
-    broker=config.celery_broker_url,
-    backend=config.celery_result_backend
-)
-
-# Configure Celery
-celery_app.conf.update(
-    task_serializer="json",
-    accept_content=["json"],
-    result_serializer="json",
-    timezone="UTC",
-    enable_utc=True,
-    task_track_started=True,
-    task_time_limit=1800,  # 30 minutes max per task
-    worker_prefetch_multiplier=1,
-    worker_max_tasks_per_child=50,
-)
+logger = get_logger(__name__)
 
 
 @celery_app.task(name="tasks.health_check")
@@ -51,6 +32,8 @@ def health_check():
 def process_video_analysis(file_id: str, analysis_id: str):
     """
     Process video analysis asynchronously.
+
+    Routes to the main orchestrator pipeline.
     
     Args:
         file_id: ID of the uploaded file
@@ -58,21 +41,18 @@ def process_video_analysis(file_id: str, analysis_id: str):
         
     Returns:
         Dict with analysis results
-        
-    Raises:
-        NotImplementedError: Video analysis must be processed through the main pipeline
     """
-    # This task is a stub - video analysis is handled by the orchestrator pipeline
-    raise NotImplementedError(
-        "Video analysis must be processed through the main orchestrator pipeline. "
-        "Use core.orchestrator.run_analysis_pipeline instead."
-    )
+    logger.info("Delegating video analysis %s to orchestrator pipeline", analysis_id)
+    from core.orchestrator import run_analysis_pipeline
+    return run_analysis_pipeline.delay(analysis_id)
 
 
 @celery_app.task(name="tasks.generate_report")
 def generate_report(analysis_id: str, report_type: str = "pdf"):
     """
     Generate analysis report asynchronously.
+
+    Routes to the forensics report generator via the orchestrator.
     
     Args:
         analysis_id: ID of the completed analysis
@@ -80,12 +60,7 @@ def generate_report(analysis_id: str, report_type: str = "pdf"):
         
     Returns:
         Dict with report generation status
-        
-    Raises:
-        NotImplementedError: Report generation must be processed through the forensics module
     """
-    # This task is a stub - report generation is handled by the forensics module
-    raise NotImplementedError(
-        "Report generation must be processed through the forensics module. "
-        "Use forensics.report.ReportGenerator instead."
-    )
+    logger.info("Delegating report generation for %s to orchestrator", analysis_id)
+    from core.orchestrator import generate_report_task
+    return generate_report_task.delay(analysis_id)

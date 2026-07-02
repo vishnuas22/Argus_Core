@@ -27,7 +27,6 @@ import type {
   VisualEvidence,
   ScientificReference,
   AudioArtifactRegion,
-  TokenAttribution,
   ManipulationRegion,
   ModalityXAI,
   AnalysisDetailResponseXAI,
@@ -64,11 +63,11 @@ export interface UseXAIReturn {
   /** Whether XAI data is available */
   hasXAI: boolean;
   /** Active modality */
-  activeModality: 'image' | 'video' | 'audio' | 'text';
+  activeModality: 'image' | 'video' | 'audio';
   /** Set active modality */
-  setActiveModality: (modality: 'image' | 'video' | 'audio' | 'text') => void;
+  setActiveModality: (modality: 'image' | 'video' | 'audio') => void;
   /** Get XAI for specific modality */
-  getModalityXAI: (modality: 'image' | 'video' | 'audio' | 'text') => ModalityXAI | null;
+  getModalityXAI: (modality: 'image' | 'video' | 'audio') => ModalityXAI | null;
 }
 
 /**
@@ -111,8 +110,6 @@ export interface UseVisualEvidenceReturn {
   heatmaps: VisualEvidence[];
   /** Spectrogram overlays */
   spectrograms: VisualEvidence[];
-  /** Token highlights */
-  tokenHighlights: VisualEvidence[];
 }
 
 // ============== QUERY KEYS ==============
@@ -172,7 +169,6 @@ export function useXAI(
   const setImageXAI = useXAIStore((state) => state.setImageXAI);
   const setVideoXAI = useXAIStore((state) => state.setVideoXAI);
   const setAudioXAI = useXAIStore((state) => state.setAudioXAI);
-  const setTextXAI = useXAIStore((state) => state.setTextXAI);
   const setEvidencePackage = useXAIStore((state) => state.setEvidencePackage);
   const setStatus = useXAIStore((state) => state.setStatus);
   const setError = useXAIStore((state) => state.setError);
@@ -316,16 +312,6 @@ export function useXAI(
         });
       }
 
-      if (query.data.text_xai) {
-        setTextXAI({
-          explanation: query.data.text_xai.explanation,
-          artifactRegions: [],
-          tokenAttributions: query.data.text_xai.token_attributions,
-          heatmapUrls: [],
-          overlayUrl: null,
-        });
-      }
-
       if (query.data.evidence_package) {
         setEvidencePackage({
           featureImportance: query.data.evidence_package.feature_importance,
@@ -346,7 +332,6 @@ export function useXAI(
     setImageXAI,
     setVideoXAI,
     setAudioXAI,
-    setTextXAI,
     setEvidencePackage,
     setStatus,
     setError,
@@ -359,7 +344,7 @@ export function useXAI(
   }, [queryClient, analysisId]);
 
   const getModalityXAI = useCallback(
-    (modality: 'image' | 'video' | 'audio' | 'text'): ModalityXAI | null => {
+    (modality: 'image' | 'video' | 'audio'): ModalityXAI | null => {
       const data = query.data;
       if (!data) return null;
 
@@ -389,16 +374,6 @@ export function useXAI(
                 artifactRegions: data.audio_xai.artifact_regions,
                 heatmapUrls: [],
                 overlayUrl: data.audio_xai.spectrogram_overlay_url,
-              }
-            : null;
-        case 'text':
-          return data.text_xai
-            ? {
-                explanation: data.text_xai.explanation,
-                artifactRegions: [],
-                tokenAttributions: data.text_xai.token_attributions,
-                heatmapUrls: [],
-                overlayUrl: null,
               }
             : null;
         default:
@@ -463,9 +438,6 @@ export function useFeatureImportance(
   if (data?.audio_xai?.explanation?.feature_importance) {
     features.push(...data.audio_xai.explanation.feature_importance);
   }
-  if (data?.text_xai?.explanation?.feature_importance) {
-    features.push(...data.text_xai.explanation.feature_importance);
-  }
 
   // Sort by importance score (descending)
   const sortedFeatures = [...features].sort((a, b) => b.importance_score - a.importance_score);
@@ -509,9 +481,6 @@ export function useVisualEvidence(
   if (data?.audio_xai?.explanation?.visual_evidence) {
     evidence.push(...data.audio_xai.explanation.visual_evidence);
   }
-  if (data?.text_xai?.explanation?.visual_evidence) {
-    evidence.push(...data.text_xai.explanation.visual_evidence);
-  }
 
   // Group by type
   const evidenceByType: Record<string, VisualEvidence[]> = {};
@@ -525,7 +494,6 @@ export function useVisualEvidence(
   // Filter by type
   const heatmaps = evidence.filter((e) => e.artifact_type === 'heatmap');
   const spectrograms = evidence.filter((e) => e.artifact_type === 'spectrogram');
-  const tokenHighlights = evidence.filter((e) => e.artifact_type === 'token_highlight');
 
   return {
     evidence,
@@ -534,7 +502,6 @@ export function useVisualEvidence(
     evidenceByType,
     heatmaps,
     spectrograms,
-    tokenHighlights,
   };
 }
 
@@ -568,7 +535,6 @@ export function useScientificReferences(
   addReferences(data?.image_xai);
   addReferences(data?.video_xai);
   addReferences(data?.audio_xai);
-  addReferences(data?.text_xai);
 
   const references = Array.from(referencesMap.values());
   const referencesByMethod = Object.fromEntries(referencesMap);
@@ -601,20 +567,17 @@ export function useReproducibility(
     data?.image_xai?.explanation?.reproducibility_hash ??
     data?.video_xai?.explanation?.reproducibility_hash ??
     data?.audio_xai?.explanation?.reproducibility_hash ??
-    data?.text_xai?.explanation?.reproducibility_hash ??
     null;
 
   const confidenceInterval = data?.evidence_package?.confidence_interval ??
     data?.image_xai?.explanation?.confidence_interval ??
     data?.video_xai?.explanation?.confidence_interval ??
     data?.audio_xai?.explanation?.confidence_interval ??
-    data?.text_xai?.explanation?.confidence_interval ??
     null;
 
   const modelVersions = data?.image_xai?.explanation?.model_versions ??
     data?.video_xai?.explanation?.model_versions ??
     data?.audio_xai?.explanation?.model_versions ??
-    data?.text_xai?.explanation?.model_versions ??
     {};
 
   return {

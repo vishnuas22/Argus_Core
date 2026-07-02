@@ -383,7 +383,7 @@ def ensure_models_for_analyzer(
     their required models are available.
     
     Args:
-        analyzer_type: Type of analyzer (audio, video, text, image)
+        analyzer_type: Type of analyzer (audio, video, image)
         model_names: List of required model names
         
     Returns:

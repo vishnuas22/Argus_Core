@@ -26,12 +26,13 @@ Target Hardware: RTX 3050 (4GB VRAM) with optimized inference
 """
 
 import asyncio
+import os
 from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
 import numpy as np
 from dataclasses import dataclass, field
 import time
 
-from analyzers.base import BaseAnalyzer, normalize_scores, aggregate_scores, compute_confidence
+from analyzers.base import BaseAnalyzer
 from detectors.wav2vec2_detector import Wav2Vec2AudioDetector
 from schemas.schemas import (
     Modality, PreprocessedData, ModalityResult, ContentType, AudioResult
@@ -41,10 +42,29 @@ from utils.logging import get_logger
 from utils.errors import ValidationError, InferenceError
 from models.model_init import ensure_models_for_analyzer, is_model_ready
 
+logger = get_logger(__name__)
+
+# Disable librosa caching (set once at module level)
+os.environ['LIBROSA_CACHE_LEVEL'] = '0'
+
+# Iteration 1: SOTA audio detector ensemble (lazy import)
+# Iteration 4: added ECAPATDNNAudioDetector for further diversity
+# Iteration 6: added CDPMambaDetector for state-space audio analysis
+try:
+    from detectors import (
+        AASIST3AudioDetector,
+        Wav2Vec2XLSRMoELoRADetector,
+        ECAPATDNNAudioDetector,
+        CDPMambaDetector,
+        combine_detector_results,
+    )
+    _SOTA_AUDIO_AVAILABLE = True
+except ImportError as _e:
+    _SOTA_AUDIO_AVAILABLE = False
+    logger.warning("SOTA audio detectors unavailable: %s", _e)
+
 if TYPE_CHECKING:
     from core.engine import InferenceEngine
-
-logger = get_logger(__name__)
 
 
 # Default audio sample rate for analysis
@@ -135,10 +155,12 @@ class AudioAnalysisDetails:
     """
     # Neural detector scores
     wav2vec2_antispoof_score: float = 0.0  # Primary: Wav2Vec2 XLSR ONNX (4.01% EER)
-    aasist_score: float = 0.0  # AASIST (Purdue-M2 ECAPA-TDNN)
-    purdue_m2_score: float = 0.0  # Legacy: Purdue-M2 (fallback)
-    rawnet_score: float = 0.0
     wav2vec2_score: float = 0.0  # Wav2Vec2 anti-spoofing (DeepFense-style)
+    
+    # Legacy fields kept for backward compatibility
+    aasist_score: float = 0.5
+    purdue_m2_score: float = 0.0
+    rawnet_score: float = 0.0
     
     # Classification (real/VC/TTS)
     classification: str = "unknown"
@@ -146,6 +168,7 @@ class AudioAnalysisDetails:
     
     # Feature-based scores
     spectral_features: Optional[SpectralFeatures] = None
+    frequency_anomaly_score: float = 0.0
     vocoder_artifacts: Optional[VocoderArtifactFeatures] = None
     voice_consistency: Optional[VoiceConsistencyFeatures] = None
     
@@ -166,6 +189,7 @@ class AudioAnalysisDetails:
             "classification": self.classification,
             "classification_scores": {k: round(v, 4) for k, v in self.classification_scores.items()},
             "spectral_features": self.spectral_features.to_dict() if self.spectral_features else None,
+            "frequency_anomaly_score": round(self.frequency_anomaly_score, 4),
             "vocoder_artifacts": self.vocoder_artifacts.to_dict() if self.vocoder_artifacts else None,
             "voice_consistency": self.voice_consistency.to_dict() if self.voice_consistency else None,
             "audio_duration_seconds": round(self.audio_duration_seconds, 2),
@@ -238,14 +262,27 @@ class AudioAnalyzer(BaseAnalyzer):
         # Wav2Vec2 detector (DeepFense-style)
         self.wav2vec2_detector: Optional[Wav2Vec2AudioDetector] = None
 
+        # ===========================================================
+        # Iteration 1: SOTA audio detector ensemble
+        # Iteration 4: added ECAPA-TDNN as 3rd detector (embedding-distance)
+        # ===========================================================
+        # AASIST3 (ASVspoof 2024) + Wav2Vec2-XLS-R-300M + MoE-LoRA
+        # (arxiv 2025 SOTA: 0.28% EER on ASVspoof 2019 LA) + ECAPA-TDNN
+        # (INTERSPEECH 2020, embedding-distance-based, MIT license).
+        # Lazy-initialized when first needed; weights auto-downweighted
+        # by DiversityEnsemble if a detector's adapter is missing or
+        # ECAPA's reference centroid is not built.
+        self._sota_audio_detectors = None
+        self._sota_audio_prior_weights = [0.94, 0.97, 0.85, 0.88]  # AASIST3, XLS-R, ECAPA, CDP-Mamba
+
         # Weight configuration for aggregation
         # Primary: Wav2Vec2 Large XLSR fine-tuned on ASVspoof2019 (4.01% EER, INT8 ONNX).
-        # Support: AASIST/Purdue-M2, PyTorch Wav2Vec2, vocoder artifacts, voice consistency.
+        # Support: Wav2Vec2 PyTorch, vocoder artifacts, voice consistency.
+        # NOTE: purdue_m2 and aasist_antispoof removed — model files unavailable.
         self.weights = {
-            "wav2vec2_antispoof": 0.40,  # Primary: Wav2Vec2 XLSR antispoofing ONNX
-            "aasist": 0.25,              # Secondary: AASIST (Purdue-M2 ECAPA-TDNN)
-            "wav2vec2": 0.15,            # Wav2Vec2 anti-spoofing (DeepFense-style)
-            "vocoder_artifacts": 0.10,   # Vocoder artifact analysis
+            "wav2vec2_antispoof": 0.55,  # Primary: Wav2Vec2 XLSR antispoofing ONNX
+            "wav2vec2": 0.20,            # Wav2Vec2 anti-spoofing (DeepFense-style)
+            "vocoder_artifacts": 0.15,   # Vocoder artifact analysis
             "voice_consistency": 0.10    # Voice consistency
         }
         
@@ -266,8 +303,6 @@ class AudioAnalyzer(BaseAnalyzer):
         """
         return [
             "wav2vec2_antispoof",  # Primary: Wav2Vec2 XLSR ONNX (4.01% EER)
-            "aasist_antispoof",    # Secondary: AASIST (Purdue-M2 ECAPA-TDNN)
-            "purdue_m2",           # Legacy spectrogram-based detector
             "wav2vec2_base"        # Feature extraction for voice consistency
         ]
     
@@ -326,8 +361,24 @@ class AudioAnalyzer(BaseAnalyzer):
             )
         
         # Run analysis
-        audio_result, details = await self.analyze_audio(waveform, sample_rate, engine)
-        
+        _audio_start = time.time()
+        audio_result, details = await self.analyze_audio(waveform, sample_rate, engine, data.analysis_id)
+
+        # ===========================================================
+        # Iteration 7: Prometheus metrics recording
+        # ===========================================================
+        try:
+            from observability import get_default_metrics
+            _latency_s = time.time() - _audio_start
+            _verdict = "fake" if audio_result.synthetic_probability >= 0.5 else "real"
+            _metrics = get_default_metrics()
+            _metrics.record_inference("audio", _verdict, _latency_s)
+            if getattr(config, "enable_adversarial_defenses", False) and \
+               getattr(config, "enable_rps", False):
+                _metrics.record_adversarial_flag("audio", "rps")
+        except Exception as _e:
+            logger.debug("Audio metrics recording failed: %s", _e)
+
         return ModalityResult(
             modality=Modality.AUDIO,
             score=audio_result.synthetic_probability,
@@ -339,7 +390,8 @@ class AudioAnalyzer(BaseAnalyzer):
         self,
         audio_data: np.ndarray,
         sample_rate: int,
-        engine: "InferenceEngine"
+        engine: "InferenceEngine",
+        analysis_id: str = "",
     ) -> Tuple[AudioResult, AudioAnalysisDetails]:
         """
         Analyze audio waveform for synthetic generation.
@@ -350,6 +402,7 @@ class AudioAnalyzer(BaseAnalyzer):
             audio_data: Raw waveform (1D numpy array)
             sample_rate: Audio sample rate
             engine: InferenceEngine
+            analysis_id: Optional analysis ID for embedding buffer provenance
             
         Returns:
             Tuple of (AudioResult, AudioAnalysisDetails)
@@ -387,11 +440,13 @@ class AudioAnalyzer(BaseAnalyzer):
         # Ensure audio models are available
         model_status = ensure_models_for_analyzer("audio", self.get_required_models())
         wav2vec2_antispoof_available = model_status.get("wav2vec2_antispoof", False)
-        aasist_available = model_status.get("aasist_antispoof", False)
-        purdue_available = model_status.get("purdue_m2", False)
         
-        if not any([wav2vec2_antispoof_available, aasist_available, purdue_available]):
-            logger.warning("No audio models available - using heuristic analysis only")
+        if not wav2vec2_antispoof_available:
+            logger.warning(
+                "No audio neural models available — analysis will use heuristic "
+                "features only (vocoder artifacts, voice consistency). Results "
+                "have limited reliability and will be dampened toward neutral."
+            )
         
         # 1. Primary: Wav2Vec2 Large XLSR antispoofing (ASVspoof2019, 4.01% EER)
         wav2vec2_antispoof_score = 0.5
@@ -404,27 +459,12 @@ class AudioAnalyzer(BaseAnalyzer):
                 use_antispoof = True
                 logger.info(f"Wav2Vec2 XLSR antispoofing: spoof_prob={wav2vec2_antispoof_score:.4f}")
             except Exception as e:
-                logger.warning(f"Wav2Vec2 antispoofing failed: {e}")
+                logger.warning("RIVP: wav2vec2_antispoof FAILED: %s — score remains 0.5", e)
         
-        # 2. Secondary: AASIST/Purdue-M2 neural detector
+        # purdue_m2 and aasist_antispoof removed — model files unavailable.
         aasist_score = 0.5
-        aasist_class_scores = {}
-        if aasist_available and is_model_ready("aasist_antispoof"):
-            try:
-                aasist_score, aasist_class_scores = await self._run_aasist(audio_data, engine)
-                details.aasist_score = aasist_score
-                details.classification_scores = aasist_class_scores
-                if not use_antispoof:
-                    details.primary_detector = "aasist"
-                logger.info(f"AASIST detection: spoof_prob={aasist_score:.4f}")
-            except Exception as e:
-                logger.warning(f"AASIST detection failed: {e}")
         
-        # 3. Purdue-M2 neural detector (legacy)
-        purdue_m2_score = await self._run_purdue_m2(mel_spectrogram, engine)
-        details.purdue_m2_score = purdue_m2_score
-        
-        # 4. Wav2Vec2 anti-spoofing detector (DeepFense-style PyTorch)
+        # 2. Wav2Vec2 anti-spoofing detector (DeepFense-style PyTorch)
         wav2vec2_score = 0.5
         try:
             if self.wav2vec2_detector is None:
@@ -435,7 +475,7 @@ class AudioAnalyzer(BaseAnalyzer):
                 details.wav2vec2_score = wav2vec2_score
                 logger.info(f"Wav2Vec2 PyTorch: spoof_prob={wav2vec2_score:.4f}")
         except Exception as e:
-            logger.warning(f"Wav2Vec2 PyTorch failed (non-critical): {e}")
+            logger.warning("RIVP: wav2vec2 PyTorch FAILED (non-critical): %s — score remains 0.5", e)
 
         # 5. Vocoder artifact analysis
         vocoder_artifacts = self.detect_vocoder_artifacts(mel_spectrogram, audio_data)
@@ -450,22 +490,99 @@ class AudioAnalyzer(BaseAnalyzer):
         details.spectral_features = spectral_features
         
         # 8. Aggregate scores
+        any_neural_available = any(
+            s != 0.5 for s in [
+                wav2vec2_antispoof_score,
+                wav2vec2_score
+            ] if s is not None
+        )
         synthetic_probability = self._compute_aggregate_score(
             wav2vec2_antispoof_score=wav2vec2_antispoof_score,
-            aasist_score=aasist_score,
-            purdue_m2_score=purdue_m2_score,
             vocoder_artifacts=vocoder_artifacts,
             voice_consistency=voice_consistency,
             use_wav2vec2_antispoof=use_antispoof,
             wav2vec2_score=wav2vec2_score,
+            any_neural_available=any_neural_available,
         )
-        
+
+        # ===========================================================
+        # Iteration 1 — SOTA audio detector ensemble integration
+        # (additive, strict-compat)
+        # ===========================================================
+        # When config.enable_sota_detectors is True, run AASIST3 and
+        # Wav2Vec2-XLS-R + MoE-LoRA on the same waveform and blend
+        # their outputs with the existing fusion.
+        if (
+            getattr(config, "enable_sota_detectors", False)
+            and _SOTA_AUDIO_AVAILABLE
+            and duration >= self.min_audio_duration
+        ):
+            try:
+                sota_audio_score = await self._run_sota_audio_ensemble(
+                    audio_data, sample_rate
+                )
+                if sota_audio_score is not None:
+                    # Blend: 65% SOTA ensemble, 35% legacy fusion.
+                    # The SOTA detectors have higher benchmark EER, so they
+                    # get the majority weight; the legacy fusion still
+                    # contributes vocoder + voice-consistency signals.
+                    synthetic_probability = float(
+                        0.65 * sota_audio_score + 0.35 * synthetic_probability
+                    )
+                    logger.info(
+                        "SOTA audio ensemble integrated: sota=%.4f, blended=%.4f",
+                        sota_audio_score, synthetic_probability,
+                    )
+            except Exception as e:
+                logger.warning("SOTA audio ensemble failed (non-fatal): %s", e)
+
+        # ===========================================================
+        # Iteration 2 — Calibration + Conformal + Adversarial flag
+        # (additive, strict-compat)
+        # ===========================================================
+        try:
+            from core.post_processing import apply_post_processing
+            _synth = np.array([
+                synthetic_probability,
+                details.wav2vec2_antispoof_score,
+                details.wav2vec2_score,
+                details.frequency_anomaly_score,
+                details.vocoder_artifacts.artifact_score if details.vocoder_artifacts else 0.5,
+                details.voice_consistency.pitch_consistency if details.voice_consistency else 0.5,
+                details.voice_consistency.formant_consistency if details.voice_consistency else 0.5,
+            ], dtype=np.float64)
+            pp = apply_post_processing(
+                score=synthetic_probability,
+                confidence=self._compute_confidence(details),
+                embedding=_synth,
+                modality="audio",
+                analysis_id=analysis_id,
+            )
+            if pp.calibrated_score != pp.original_score:
+                logger.info(
+                    "Audio temperature scaling: %.4f -> %.4f (T=%.4f)",
+                    pp.original_score, pp.calibrated_score, pp.temperature,
+                )
+                synthetic_probability = pp.calibrated_score
+        except Exception as e:
+            logger.debug("Audio post-processing failed (non-fatal): %s", e)
+
         # 6. Determine if vocoder artifacts detected
         vocoder_detected = vocoder_artifacts.artifact_score > 0.5
         
         # 7. Compute voice consistency score (invert - low consistency = suspicious)
         voice_consistency_score = voice_consistency.pitch_consistency * 0.5 + \
                                   voice_consistency.formant_consistency * 0.5
+        
+        # 8. Derive frequency anomaly score from spectral features
+        frequency_anomaly_score = 0.0
+        if spectral_features is not None:
+            flatness = spectral_features.spectral_flatness
+            zcr = spectral_features.zero_crossing_rate
+            frequency_anomaly_score = float(np.clip(
+                (1.0 - flatness) * 0.5 + zcr * 0.5, 0, 1
+            ))
+        details.frequency_anomaly_score = frequency_anomaly_score
         
         inference_time = (time.time() - start_time) * 1000
         confidence = self._compute_confidence(details)
@@ -480,11 +597,70 @@ class AudioAnalyzer(BaseAnalyzer):
             synthetic_probability=synthetic_probability,
             vocoder_artifacts_detected=vocoder_detected,
             voice_consistency_score=voice_consistency_score,
-            spectrogram_url=None  # Would be set after uploading to MinIO
+            spectrogram_url=None,  # Would be set after uploading to MinIO
+            frequency_anomaly_score=frequency_anomaly_score,
+            aasist_score=aasist_score if aasist_score != 0.5 else None,
         )
-        
+
         return audio_result, details
-    
+
+    # ------------------------------------------------------------------
+    # Iteration 1: SOTA audio detector ensemble helper
+    # ------------------------------------------------------------------
+    async def _run_sota_audio_ensemble(
+        self,
+        audio_data: np.ndarray,
+        sample_rate: int,
+    ) -> Optional[float]:
+        """
+        Run AASIST3 and Wav2Vec2-XLS-R + MoE-LoRA on the audio waveform
+        and fuse their outputs via DiversityEnsemble.
+
+        Args:
+            audio_data: 1D float32 waveform at the analyzer's target sr.
+            sample_rate: Sample rate of audio_data.
+
+        Returns:
+            Fused spoof probability in [0, 1], or None on failure.
+        """
+        if self._sota_audio_detectors is None:
+            detectors = [
+                AASIST3AudioDetector(),
+                Wav2Vec2XLSRMoELoRADetector(),
+            ]
+            # Iteration 4: add ECAPA-TDNN if enabled (gated because it
+            # needs a reference centroid that operators must build).
+            if getattr(config, "enable_ecapa", True):
+                try:
+                    detectors.append(ECAPATDNNAudioDetector())
+                except Exception as e:
+                    logger.warning("ECAPA-TDNN init failed (non-fatal): %s", e)
+            # Iteration 6: add CDP-Mamba for state-space analysis
+            try:
+                detectors.append(CDPMambaDetector())
+            except Exception as e:
+                logger.warning("CDP-Mamba init failed (non-fatal): %s", e)
+            self._sota_audio_detectors = detectors
+
+        detector_results = []
+        for det in self._sota_audio_detectors:
+            try:
+                r = await det.detect(audio_data, sample_rate=sample_rate)
+                detector_results.append(r)
+            except Exception as e:
+                logger.warning("SOTA audio detector %s failed: %s", det.name, e)
+
+        if not detector_results:
+            return None
+
+        fused = combine_detector_results(
+            detector_results,
+            prior_weights=self._sota_audio_prior_weights[:len(detector_results)],
+        )
+        if fused.error and "all_members_failed" in fused.error:
+            return None
+        return float(fused.score)
+
     def extract_mel_spectrogram(
         self,
         audio: np.ndarray,
@@ -502,10 +678,6 @@ class AudioAnalyzer(BaseAnalyzer):
         """
         try:
             import librosa
-            
-            # Disable librosa caching to avoid joblib locator issues
-            import os
-            os.environ['LIBROSA_CACHE_LEVEL'] = '0'
             
             mel_spec = librosa.feature.melspectrogram(
                 y=audio,
@@ -584,8 +756,6 @@ class AudioAnalyzer(BaseAnalyzer):
         """
         try:
             import librosa
-            import os
-            os.environ['LIBROSA_CACHE_LEVEL'] = '0'
             
             mfcc = librosa.feature.mfcc(
                 y=audio,
@@ -653,8 +823,6 @@ class AudioAnalyzer(BaseAnalyzer):
         """
         try:
             import librosa
-            import os
-            os.environ['LIBROSA_CACHE_LEVEL'] = '0'
             
             # Spectral centroid
             centroid = librosa.feature.spectral_centroid(y=audio, sr=sr)[0]
@@ -958,152 +1126,6 @@ class AudioAnalyzer(BaseAnalyzer):
         
         return float(centroid)
     
-    async def _run_purdue_m2(
-        self,
-        spectrogram: np.ndarray,
-        engine: "InferenceEngine"
-    ) -> float:
-        """
-        Run Purdue-M2 neural detector.
-        
-        Args:
-            spectrogram: Mel-spectrogram (T, n_mels)
-            engine: InferenceEngine
-            
-        Returns:
-            Synthetic probability [0, 1]
-        """
-        try:
-            # Prepare input for purdue_m2.onnx (NHWC: [1, 224, 224, 3]).
-            # Convert mel spectrogram into a normalized image-like tensor.
-            spec = np.asarray(spectrogram, dtype=np.float32)
-            if spec.ndim == 3 and spec.shape[0] == 1:
-                spec = spec[0]
-            spec = np.squeeze(spec)
-            if spec.ndim != 2:
-                raise ValueError(f"Unexpected spectrogram shape for Purdue-M2: {spec.shape}")
-            
-            spec_min = float(np.min(spec))
-            spec_max = float(np.max(spec))
-            if spec_max > spec_min:
-                spec_norm = (spec - spec_min) / (spec_max - spec_min)
-            else:
-                spec_norm = np.zeros_like(spec, dtype=np.float32)
-            
-            try:
-                import cv2
-                spec_resized = cv2.resize(spec_norm, (224, 224), interpolation=cv2.INTER_LINEAR)
-            except Exception:
-                from PIL import Image as PILImage
-                spec_img = PILImage.fromarray((spec_norm * 255.0).astype(np.uint8))
-                spec_img = spec_img.resize((224, 224), PILImage.Resampling.BILINEAR)
-                spec_resized = np.asarray(spec_img, dtype=np.float32) / 255.0
-            
-            spec_rgb = np.stack([spec_resized, spec_resized, spec_resized], axis=-1).astype(np.float32)
-            batch = np.expand_dims(spec_rgb, axis=0)  # (1, 224, 224, 3)
-            
-            result = await engine.infer(
-                "purdue_m2",
-                batch,
-                return_probabilities=True
-            )
-            
-            # Extract synthetic probability
-            if result.class_probabilities is not None:
-                probs = result.class_probabilities
-                # Assuming class 1 is synthetic/fake
-                fake_prob = float(probs[0, 1]) if probs.shape[-1] >= 2 else float(probs[0, 0])
-            else:
-                fake_prob = float(result.predictions.mean())
-            
-            return fake_prob
-            
-        except ImportError as e:
-            logger.warning(f"Purdue-M2 dependencies missing, using neutral score: {e}")
-            return 0.5
-        except RuntimeError as e:
-            logger.warning(f"Purdue-M2 runtime error, using neutral score: {e}")
-            return 0.5
-        except ValueError as e:
-            logger.warning(f"Purdue-M2 input validation error, using neutral score: {e}")
-            return 0.5
-        except Exception as e:
-            logger.warning(f"Purdue-M2 inference failed, using neutral score: {type(e).__name__}: {e}")
-            return 0.5
-    
-    async def _run_aasist(
-        self,
-        audio: np.ndarray,
-        engine: "InferenceEngine"
-    ) -> Tuple[float, Dict[str, float]]:
-        """
-        Run AASIST (Anti-spoofing with Attention and Self-supervised Learning) detector.
-        
-        AASIST is the ASVspoof 2021 winner for synthetic voice detection.
-        It analyzes raw audio waveforms for spoofing artifacts.
-        
-        Args:
-            audio: Raw waveform (1D array) at 16kHz
-            engine: InferenceEngine
-            
-        Returns:
-            Tuple of (spoof_probability, class_scores)
-        """
-        try:
-            # AASIST expects fixed-length audio (~4 seconds at 16kHz = 64600 samples)
-            target_length = 64600
-            
-            # Pad or truncate to target length
-            if len(audio) < target_length:
-                # Pad with zeros
-                padded = np.zeros(target_length, dtype=np.float32)
-                padded[:len(audio)] = audio
-                audio = padded
-            elif len(audio) > target_length:
-                # Truncate
-                audio = audio[:target_length]
-            
-            # Ensure float32
-            audio = audio.astype(np.float32)
-            
-            # Add batch dimension
-            batch = np.expand_dims(audio, 0)  # (1, 64600)
-            
-            result = await engine.infer(
-                "aasist_antispoof",
-                batch,
-                return_probabilities=True
-            )
-            
-            # Extract spoof probability
-            if result.class_probabilities is not None:
-                probs = result.class_probabilities[0]
-                # AASIST: class 0 = bonafide, class 1 = spoof
-                spoof_prob = float(probs[1]) if len(probs) >= 2 else float(probs[0])
-                class_scores = {
-                    "bonafide": float(probs[0]) if len(probs) >= 2 else 1.0 - spoof_prob,
-                    "spoof": spoof_prob
-                }
-            else:
-                spoof_prob = float(result.predictions[0])
-                class_scores = {"bonafide": 1.0 - spoof_prob, "spoof": spoof_prob}
-            
-            logger.debug(f"AASIST result: spoof_prob={spoof_prob:.4f}")
-            return spoof_prob, class_scores
-            
-        except ImportError as e:
-            logger.error(f"AASIST model dependencies missing: {e}")
-            raise InferenceError("aasist", f"Missing dependencies: {e}")
-        except RuntimeError as e:
-            logger.error(f"AASIST ONNX runtime error: {e}")
-            raise InferenceError("aasist", f"Runtime error: {e}")
-        except ValueError as e:
-            logger.error(f"AASIST input validation error: {e}")
-            raise InferenceError("aasist", f"Invalid input: {e}")
-        except Exception as e:
-            logger.error(f"AASIST inference failed: {type(e).__name__}: {e}")
-            raise InferenceError("aasist", f"Unexpected error: {type(e).__name__}: {e}")
-
     async def _run_wav2vec2_antispoof(
         self,
         audio: np.ndarray,
@@ -1146,10 +1168,14 @@ class AudioAnalyzer(BaseAnalyzer):
             # Add batch dimension
             batch = np.expand_dims(audio, 0)  # (1, 64600)
             
+            # Build attention mask (int32 — ONNX model expects int32, not int64)
+            attention_mask = np.ones((1, target_length), dtype=np.int32)
+            
             # Run inference via InferenceEngine
+            # Pass dict with both required inputs (input_values + attention_mask)
             result = await engine.infer(
                 "wav2vec2_antispoof",
-                batch,
+                {"input_values": batch, "attention_mask": attention_mask},
                 return_probabilities=True
             )
             
@@ -1178,24 +1204,22 @@ class AudioAnalyzer(BaseAnalyzer):
     def _compute_aggregate_score(
         self,
         wav2vec2_antispoof_score: float = 0.5,
-        aasist_score: float = 0.5,
-        purdue_m2_score: float = 0.5,
         vocoder_artifacts: Optional[VocoderArtifactFeatures] = None,
         voice_consistency: Optional[VoiceConsistencyFeatures] = None,
         use_wav2vec2_antispoof: bool = True,
         wav2vec2_score: float = 0.5,
+        any_neural_available: bool = True,
     ) -> float:
         """
         Compute aggregate synthetic probability.
-        
+
         Args:
             wav2vec2_antispoof_score: Wav2Vec2 XLSR ONNX score (primary)
-            aasist_score: AASIST detector score (secondary)
-            purdue_m2_score: Purdue-M2 detector score
             vocoder_artifacts: Vocoder artifact analysis
             voice_consistency: Voice consistency analysis
             use_wav2vec2_antispoof: Whether Wav2Vec2 antispoofing was used
             wav2vec2_score: Wav2Vec2 anti-spoofing score (DeepFense-style PyTorch)
+            any_neural_available: Whether any neural model produced a non-default score
             
         Returns:
             Aggregate synthetic probability [0, 1]
@@ -1214,7 +1238,6 @@ class AudioAnalyzer(BaseAnalyzer):
         if use_wav2vec2_antispoof:
             aggregate = (
                 self.weights["wav2vec2_antispoof"] * wav2vec2_antispoof_score +
-                self.weights["aasist"] * aasist_score +
                 self.weights["wav2vec2"] * wav2vec2_score +
                 self.weights["vocoder_artifacts"] * vocoder_score +
                 self.weights["voice_consistency"] * inconsistency_score
@@ -1222,15 +1245,27 @@ class AudioAnalyzer(BaseAnalyzer):
         else:
             # Fallback: redistribute antispoof weight across remaining detectors
             total_fallback = (
-                self.weights["aasist"] + self.weights["wav2vec2"] +
+                self.weights["wav2vec2"] +
                 self.weights["vocoder_artifacts"] + self.weights["voice_consistency"]
             )
             aggregate = (
-                (self.weights["aasist"] / total_fallback) * aasist_score +
                 (self.weights["wav2vec2"] / total_fallback) * wav2vec2_score +
                 (self.weights["vocoder_artifacts"] / total_fallback) * vocoder_score +
                 (self.weights["voice_consistency"] / total_fallback) * inconsistency_score
             )
+        
+        # When no neural models produced a meaningful score, dampen the aggregate
+        # toward neutral (0.5). Heuristic-only features (vocoder artifacts, voice
+        # consistency) are unreliable on their own and can produce false positives
+        # for simple signals like pure sine waves or silence.
+        if not any_neural_available:
+            logger.warning(
+                "RIVP: HEURISTIC-ONLY AUDIO: No neural models produced a non-neutral "
+                f"score. Dampening aggregate {aggregate:.4f} toward 0.5 (80%% reduction). "
+                "Audio modality should be treated as low-confidence. "
+                "No real ML inference contributed to this result."
+            )
+            aggregate = 0.5 + (aggregate - 0.5) * 0.2
         
         return float(np.clip(aggregate, 0, 1))
     
@@ -1253,14 +1288,12 @@ class AudioAnalyzer(BaseAnalyzer):
         # Score extremity factor - use primary detector score
         if details.primary_detector == "wav2vec2_antispoof":
             score = details.wav2vec2_antispoof_score
-        elif details.primary_detector == "aasist":
-            score = details.aasist_score
         else:
-            score = details.purdue_m2_score
+            score = 0.5
         extremity_factor = abs(score - 0.5) * 2
         
         # Primary detector bonus (Wav2Vec2 XLSR antispoofing is most reliable)
-        detector_bonus = 0.1 if details.primary_detector in ("wav2vec2_antispoof", "aasist") else 0.0
+        detector_bonus = 0.1 if details.primary_detector == "wav2vec2_antispoof" else 0.0
         
         confidence = (
             0.4 * duration_factor +

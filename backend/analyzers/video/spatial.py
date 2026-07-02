@@ -31,23 +31,27 @@ import time
 
 from analyzers.base import (
     SubAnalyzer,
-    normalize_scores,
-    aggregate_scores,
     compute_confidence,
     detect_anomalies,
-    infer_fake_class_index,
-    extract_fake_probabilities,
 )
 from schemas.schemas import SpatialResult
 from config import config
 from utils.logging import get_logger
 from utils.errors import InferenceError
 
+logger = get_logger(__name__)
+
+# Iteration 1: SOTA per-frame image detector (lazy import)
+try:
+    from detectors import CLIPLoRAImageDetector
+    _SOTA_SPATIAL_AVAILABLE = True
+except ImportError as _e:
+    _SOTA_SPATIAL_AVAILABLE = False
+    logger.warning("SOTA CLIP spatial detector unavailable: %s", _e)
+
 if TYPE_CHECKING:
     from core.engine import InferenceEngine
     from core.explain import ExplainabilityEngine
-
-logger = get_logger(__name__)
 
 
 @dataclass
@@ -147,7 +151,15 @@ class SpatialAnalyzer(SubAnalyzer):
         self.efficientnet_weight = 0.7
         self.clip_weight = 0.2
         self.frequency_weight = 0.1
-        
+
+        # ===========================================================
+        # Iteration 1: SOTA per-frame CLIP+LoRA detector
+        # ===========================================================
+        # Lazy-initialized. When config.enable_sota_detectors is True,
+        # the analyzer runs the CLIP+LoRA detector on each face crop
+        # and blends the per-frame average with the legacy aggregate.
+        self._sota_clip_detector = None
+
         logger.info(
             f"SpatialAnalyzer initialized: target_size={target_size}, "
             f"batch_size={batch_size}, heatmaps={generate_heatmaps}"
@@ -238,22 +250,142 @@ class SpatialAnalyzer(SubAnalyzer):
         
         # 8. Compute aggregate score
         aggregate_score = self._compute_aggregate_score(per_frame_scores)
-        
+
+        # ===========================================================
+        # Iteration 1 — SOTA CLIP+LoRA per-frame integration
+        # (additive, strict-compat)
+        # ===========================================================
+        # Run the CLIP+LoRA image detector on a sample of frames and
+        # blend the per-frame average with the legacy aggregate. The
+        # SOTA detector has higher benchmark AUC, so it gets the
+        # majority weight; the legacy aggregate still contributes
+        # EfficientNet + frequency signals.
+        if (
+            getattr(config, "enable_sota_detectors", False)
+            and _SOTA_SPATIAL_AVAILABLE
+            and face_crops
+        ):
+            try:
+                sota_score = await self._run_sota_clip_pass(face_crops)
+                if sota_score is not None:
+                    aggregate_score = float(
+                        0.55 * sota_score + 0.45 * aggregate_score
+                    )
+                    logger.info(
+                        "SOTA CLIP spatial integrated: sota=%.4f, blended=%.4f",
+                        sota_score, aggregate_score,
+                    )
+            except Exception as e:
+                logger.warning("SOTA CLIP spatial pass failed (non-fatal): %s", e)
+
+        # ===========================================================
+        # Iteration 2 — RPS sanitization (applied inside _run_sota_clip_pass)
+        # Iteration 3 — Post-processing (calibration + conformal + drift)
+        # ===========================================================
+        try:
+            from core.post_processing import apply_post_processing
+            pp = apply_post_processing(
+                score=aggregate_score,
+                confidence=compute_confidence(np.array(per_frame_scores), len(face_crops)),
+            )
+            if pp.calibrated_score != pp.original_score:
+                logger.info(
+                    "Spatial temperature scaling: %.4f -> %.4f (T=%.4f)",
+                    pp.original_score, pp.calibrated_score, pp.temperature,
+                )
+                aggregate_score = pp.calibrated_score
+        except Exception as e:
+            logger.debug("Spatial post-processing failed (non-fatal): %s", e)
+
         inference_time = (time.time() - start_time) * 1000
         confidence = compute_confidence(np.array(per_frame_scores), len(face_crops))
         self.record_analysis(True, inference_time, confidence)
-        
+
         logger.info(
             f"Spatial analysis complete: {len(face_crops)} frames, "
             f"score={aggregate_score:.3f}, anomalies={len(anomaly_indices)}"
         )
-        
+
+        # ===========================================================
+        # Iteration 7: Prometheus metrics recording
+        # ===========================================================
+        try:
+            from observability import get_default_metrics
+            _verdict = "fake" if aggregate_score >= 0.5 else "real"
+            _metrics = get_default_metrics()
+            _metrics.record_inference("video", _verdict, inference_time / 1000.0)
+            if getattr(config, "enable_adversarial_defenses", False) and \
+               getattr(config, "enable_rps", False):
+                _metrics.record_adversarial_flag("video", "rps")
+        except Exception as _e:
+            logger.debug("Spatial metrics recording failed: %s", _e)
+
         return SpatialResult(
             score=aggregate_score,
             per_frame_scores=per_frame_scores,
             anomaly_indices=anomaly_indices,
             heatmap_urls=heatmap_urls
         )
+
+    # ------------------------------------------------------------------
+    # Iteration 1: SOTA CLIP+LoRA per-frame helper
+    # ------------------------------------------------------------------
+    async def _run_sota_clip_pass(
+        self,
+        face_crops: List[np.ndarray],
+    ) -> Optional[float]:
+        """
+        Run the CLIP+LoRA image detector on a sample of face crops
+        and return the average fake probability.
+
+        Iteration 2: applies RPS sanitization to each frame before
+        detection.
+
+        Args:
+            face_crops: List of HxWx3 RGB face images.
+
+        Returns:
+            Mean fake probability in [0, 1], or None on failure.
+        """
+        if not face_crops:
+            return None
+
+        if self._sota_clip_detector is None:
+            self._sota_clip_detector = CLIPLoRAImageDetector()
+
+        # Iteration 2: lazy-init RPS sanitizer
+        rps = None
+        if getattr(config, "enable_adversarial_defenses", False) and getattr(config, "enable_rps", False):
+            try:
+                from defenses import get_default_rps
+                rps = get_default_rps()
+            except Exception as e:
+                logger.debug("RPS unavailable: %s", e)
+
+        # Sample at most 8 frames for latency control
+        n = min(8, len(face_crops))
+        if n == len(face_crops):
+            sampled = face_crops
+        else:
+            idx = np.linspace(0, len(face_crops) - 1, n).astype(int)
+            sampled = [face_crops[i] for i in idx]
+
+        async def _process_crop(crop: np.ndarray) -> Optional[float]:
+            try:
+                if rps is not None:
+                    crop = rps.sanitize_image(crop)
+                r = await self._sota_clip_detector.detect(crop)
+                if r.error is None:
+                    return r.score
+            except Exception as e:
+                logger.debug("SOTA CLIP per-frame failed: %s", e)
+            return None
+
+        results = await asyncio.gather(*[_process_crop(c) for c in sampled])
+        scores = [s for s in results if s is not None]
+        if not scores:
+            return None
+        return float(np.mean(scores))
     
     def _preprocess_batch(
         self,

@@ -110,13 +110,11 @@ const MOCK_TRUST_SCORE: TrustScore = {
     video_spatial: 0.88,
     video_temporal: 0.82,
     audio: 0.90,
-    text: 0.75,
     metadata: 0.95,
     weights: {
       video_spatial: 0.30,
       video_temporal: 0.25,
       audio: 0.20,
-      text: 0.10,
       metadata: 0.15,
     },
   },
@@ -161,7 +159,6 @@ const MOCK_DETAIL_RESPONSE: AnalysisDetailResponse = {
     spectrogram_url: 'https://example.com/spectrogram.png',
     duration_seconds: 10.5,
   },
-  text_result: undefined,
   metadata_result: {
     score: 0.95,
     c2pa_validated: true,

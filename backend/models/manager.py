@@ -179,6 +179,15 @@ class ModelManager:
         is_pytorch = metadata.download_url and metadata.download_url.startswith("pytorch:")
         
         with self._lock:
+            # Double-check: another coroutine may have loaded it while we were loading
+            if model_name in self._loaded:
+                self._loaded[model_name].touch()
+                self._loaded.move_to_end(model_name)
+                loaded = self._loaded[model_name]
+                if loaded.is_pytorch:
+                    return (loaded.session, loaded.processor)
+                return loaded.session
+
             if is_pytorch:
                 model, processor = session
                 self._loaded[model_name] = LoadedModel(

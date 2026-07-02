@@ -31,7 +31,7 @@ Classification Uncertainty", NeurIPS 2018.
 import numpy as np
 import torch
 from typing import Dict, List, Optional, Tuple, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from config import config
 from schemas.schemas import (
@@ -64,8 +64,9 @@ class UncertaintyEstimator:
     - Low confidence across all modalities → high uncertainty
     """
 
-    def __init__(self, method: str = "dirichlet"):
+    def __init__(self, method: str = "dirichlet", evidence_reg: float = 1e-3):
         self.method = method
+        self._evidence_reg = evidence_reg
 
     def estimate(
         self,
@@ -108,6 +109,7 @@ class UncertaintyEstimator:
             conf = r.confidence
 
             evidence = conf * (abs(score - 0.5) * 2) + self._evidence_reg
+            evidence = max(evidence, 1e-4)  # Ensure minimum evidence floor
             alpha_fake += w * evidence * score
             alpha_real += w * evidence * (1.0 - score)
 
@@ -118,10 +120,16 @@ class UncertaintyEstimator:
         results: List[ModalityResult],
         weights: Dict[str, float],
     ) -> float:
-        """Uncertainty from Dirichlet distribution: K / sum(alpha)."""
+        """Uncertainty from Dirichlet distribution: K / sum(alpha).
+
+        For single-modality analysis, use K=1 (one effective class) so that
+        a confident single modality can produce a decisive verdict instead of
+        being forced to 'uncertain' by the K=2 binary formula.
+        """
         alpha_fake, alpha_real = self._compute_dirichlet_params(results, weights)
         total_alpha = alpha_fake + alpha_real
-        uncertainty = min(2.0 / total_alpha, 1.0)
+        k = 1 if len(results) == 1 else 2
+        uncertainty = min(float(k) / total_alpha, 1.0)
         return float(uncertainty)
 
     def _disagreement_uncertainty(
@@ -170,7 +178,8 @@ class MultiModalFusion:
         """
         self.config = fusion_config or FusionConfig()
         self.uncertainty_estimator = UncertaintyEstimator(
-            method=self.config.uncertainty_method
+            method=self.config.uncertainty_method,
+            evidence_reg=self.config.evidence_reg
         )
 
         # Lazily initialize the cross-attention engine
@@ -295,12 +304,12 @@ class MultiModalFusion:
 
             for r in results:
                 mod = r.modality.value
-                score = r.confidence
+                conf = r.confidence
                 extremity = abs(r.score - 0.5) * 2
 
                 # Evidence scales with confidence × extremity
                 # Uncertain or near-0.5 predictions contribute little evidence
-                evidence = max(score * extremity, 1e-4)
+                evidence = max(conf * extremity, 1e-4)
 
                 alpha_fake += evidence * r.score
                 alpha_real += evidence * (1.0 - r.score)
@@ -348,6 +357,8 @@ class MultiModalFusion:
         Returns:
             Tuple of (fake_probability, attention_weights_dict, fused_features)
         """
+        import torch
+
         engine = self.cross_attention_engine
         with torch.no_grad():
             output = engine.forward(
@@ -360,10 +371,35 @@ class MultiModalFusion:
         fake_prob = float(output.fake_probability.mean().item())
         attn_weights = {
             k: float(v.mean().item()) if v is not None else 0.0
-            for k, v in output.cross_attention_weights.items()
+            for k, v in (output.cross_attention_weights or {}).items()
         }
 
-        return fake_prob, attn_weights, output.fused_features
+        # UMFTOutput has modality_scores (dict of tensors), not fused_features.
+        # Concatenate modality score values into a single feature vector.
+        if output.modality_scores:
+            fused_features = torch.cat(
+                [v.flatten() for v in output.modality_scores.values()]
+            )
+        else:
+            fused_features = output.fake_probability.flatten()
+
+        return fake_prob, attn_weights, fused_features
+
+    @property
+    def umft_available(self) -> bool:
+        """Check if UMFT cross-attention engine has trained weights."""
+        try:
+            if self._cross_attention_engine is None:
+                return False
+            # Check if the classification head has been trained (not random-init)
+            head = getattr(self._cross_attention_engine, 'classifier', None)
+            if head is None:
+                return False
+            # Check if weights are pretrained (not random) by looking for
+            # a loaded checkpoint marker
+            return getattr(self._cross_attention_engine, '_weights_loaded', False)
+        except Exception:
+            return False
 
     def aggregate_from_analyzers(
         self,

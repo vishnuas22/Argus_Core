@@ -25,7 +25,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders, checkAccessibility, createMockVideoResult, createMockAudioResult, createMockTextResult, createMockMetadataResult } from '../utils/test-utils';
+import { renderWithProviders, checkAccessibility, createMockVideoResult, createMockAudioResult, createMockMetadataResult } from '../utils/test-utils';
 import { ModalityTabs, ModalityTabsSkeleton } from '@/components/modality/ModalityTabs';
 
 // ============== MOCKS ==============
@@ -43,14 +43,6 @@ vi.mock('@/components/modality/AudioAnalysisPanel', () => ({
   default: ({ result, analysisId }: any) => (
     <div data-testid="audio-panel-mock">
       Audio Panel - Analysis ID: {analysisId}, Score: {result.score}
-    </div>
-  ),
-}));
-
-vi.mock('@/components/modality/TextAnalysisPanel', () => ({
-  default: ({ result, analysisId }: any) => (
-    <div data-testid="text-panel-mock">
-      Text Panel - Analysis ID: {analysisId}, Score: {result.score}
     </div>
   ),
 }));
@@ -74,10 +66,6 @@ const mockVideoResult = createMockVideoResult({
 
 const mockAudioResult = createMockAudioResult({
   score: 0.82,
-});
-
-const mockTextResult = createMockTextResult({
-  score: 0.90,
 });
 
 const mockMetadataResult = createMockMetadataResult({
@@ -126,7 +114,6 @@ describe('ModalityTabs', () => {
           analysisId={mockAnalysisId}
           videoResult={mockVideoResult}
           audioResult={mockAudioResult}
-          textResult={mockTextResult}
           metadataResult={mockMetadataResult}
         />
       );
@@ -134,7 +121,6 @@ describe('ModalityTabs', () => {
       await waitFor(() => {
         expect(screen.getByTestId('modality-tab-video')).toBeInTheDocument();
         expect(screen.getByTestId('modality-tab-audio')).toBeInTheDocument();
-        expect(screen.getByTestId('modality-tab-text')).toBeInTheDocument();
         expect(screen.getByTestId('modality-tab-metadata')).toBeInTheDocument();
       });
     });
@@ -258,7 +244,6 @@ describe('ModalityTabs', () => {
           analysisId={mockAnalysisId}
           videoResult={mockVideoResult}
           audioResult={mockAudioResult}
-          textResult={mockTextResult}
         />
       );
       
@@ -389,7 +374,6 @@ describe('ModalityTabs', () => {
           analysisId={mockAnalysisId}
           videoResult={mockVideoResult}
           audioResult={mockAudioResult}
-          textResult={mockTextResult}
         />
       );
       
@@ -398,16 +382,13 @@ describe('ModalityTabs', () => {
         expect(screen.getByTestId('video-panel-mock')).toBeInTheDocument();
       });
       
-      // Text panel should not be loaded yet
-      expect(screen.queryByTestId('text-panel-mock')).not.toBeInTheDocument();
+      // Click audio tab
+      const audioTab = screen.getByTestId('modality-tab-audio');
+      await user.click(audioTab);
       
-      // Click text tab
-      const textTab = screen.getByTestId('modality-tab-text');
-      await user.click(textTab);
-      
-      // Now text panel should be loaded
+      // Now audio panel should be loaded
       await waitFor(() => {
-        expect(screen.getByTestId('text-panel-mock')).toBeInTheDocument();
+        expect(screen.getByTestId('audio-panel-mock')).toBeInTheDocument();
       });
     });
   });
@@ -512,20 +493,19 @@ describe('ModalityTabs', () => {
       });
     });
 
-    it('should use 4-column grid with 4 tabs', async () => {
+    it('should use 3-column grid with 3 tabs', async () => {
       renderWithProviders(
         <ModalityTabs
           analysisId={mockAnalysisId}
           videoResult={mockVideoResult}
           audioResult={mockAudioResult}
-          textResult={mockTextResult}
           metadataResult={mockMetadataResult}
         />
       );
       
       await waitFor(() => {
         const tabsList = screen.getByRole('tablist');
-        expect(tabsList).toHaveClass('grid-cols-4');
+        expect(tabsList).toHaveClass('grid-cols-3');
       });
     });
   });
@@ -647,9 +627,8 @@ describe('ModalityTabs', () => {
           analysisId={mockAnalysisId}
           videoResult={mockVideoResult}
           audioResult={mockAudioResult}
-          textResult={mockTextResult}
           metadataResult={mockMetadataResult}
-          defaultTab="text"
+          defaultTab="audio"
           onTabChange={onTabChange}
           variant="card"
           className="custom-class"
@@ -657,8 +636,8 @@ describe('ModalityTabs', () => {
       );
       
       await waitFor(() => {
-        // Should start with text tab active
-        expect(screen.getByTestId('modality-tab-text')).toHaveAttribute('data-state', 'active');
+        // Should start with audio tab active
+        expect(screen.getByTestId('modality-tab-audio')).toHaveAttribute('data-state', 'active');
         
         // Should be wrapped in card
         expect(screen.getByText(/Detailed Analysis/)).toBeInTheDocument();
@@ -685,17 +664,14 @@ describe('ModalityTabs', () => {
           analysisId={mockAnalysisId}
           videoResult={mockVideoResult}
           audioResult={mockAudioResult}
-          textResult={mockTextResult}
         />
       );
       
       const audioTab = screen.getByTestId('modality-tab-audio');
-      const textTab = screen.getByTestId('modality-tab-text');
       const videoTab = screen.getByTestId('modality-tab-video');
       
       // Rapidly switch tabs
       await user.click(audioTab);
-      await user.click(textTab);
       await user.click(videoTab);
       
       await waitFor(() => {
@@ -776,7 +752,6 @@ describe('Snapshots', () => {
         analysisId={mockAnalysisId}
         videoResult={mockVideoResult}
         audioResult={mockAudioResult}
-        textResult={mockTextResult}
         metadataResult={mockMetadataResult}
       />
     );

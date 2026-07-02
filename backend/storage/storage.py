@@ -66,11 +66,23 @@ class LocalStorageClient:
         sanitized_key = object_key.replace("\\", "/").lstrip("/")
         full_path = (self.base_path / bucket / sanitized_key).resolve()
         base_resolved = self.base_path.resolve()
-        if not str(full_path).startswith(str(base_resolved)):
-            raise StorageError(
-                "path_traversal",
-                f"Invalid object key: path escapes storage base directory"
-            )
+        # M1 fix: use Path.is_relative_to() instead of naive string
+        # prefix check. The old str().startswith() check could be
+        # bypassed if the base path is a prefix of another path
+        # (e.g. /data/storage vs /data/storage_other).
+        try:
+            if not full_path.is_relative_to(base_resolved):
+                raise StorageError(
+                    "path_traversal",
+                    f"Invalid object key: path escapes storage base directory"
+                )
+        except TypeError:
+            # Python < 3.9 fallback
+            if not str(full_path).startswith(str(base_resolved) + "/"):
+                raise StorageError(
+                    "path_traversal",
+                    f"Invalid object key: path escapes storage base directory"
+                )
         return full_path
     
     def _ensure_bucket_dir(self, bucket: str) -> Path:
@@ -319,7 +331,7 @@ class StorageClient(IStorage):
         for attempt in range(max_retries + 1):
             try:
                 return await self._run_sync(func, *args, **kwargs)
-            except S3Error as e:
+            except self._S3Error as e:
                 last_error = e
                 if attempt < max_retries:
                     delay = min(RETRY_DELAY_BASE * (2 ** attempt), RETRY_DELAY_MAX)
@@ -673,9 +685,12 @@ class StorageClient(IStorage):
         # Rewrite internal Docker endpoint to external endpoint for browser access
         if self.endpoint != self.external_endpoint:
             url = url.replace(self.endpoint, self.external_endpoint)
-            # Also fix http:// to match the external access pattern
-            if self.external_endpoint.startswith("localhost"):
-                url = url.replace("http://localhost", "http://localhost")
+            # L2 fix: removed dead no-op code that was:
+            #   url = url.replace("http://localhost", "http://localhost")
+            # This replaced a string with itself. The intended logic
+            # (rewriting the Docker-internal hostname to the external
+            # one) is already handled by the url.replace() call above
+            # when self.endpoint != self.external_endpoint.
         
         return url
     
@@ -757,7 +772,7 @@ class StorageClient(IStorage):
                 recursive=recursive
             )
             return [obj.object_name for obj in objects]
-        except S3Error as e:
+        except self._S3Error as e:
             logger.error(f"List objects failed: {e}")
             raise StorageError("list_objects", str(e))
     

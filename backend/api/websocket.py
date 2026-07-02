@@ -304,6 +304,8 @@ class ConnectionManager:
         import redis.asyncio as aioredis
         
         while self._running:
+            redis_client = None
+            pubsub = None
             try:
                 # Connect to Redis
                 redis_client = aioredis.from_url(config.redis_url)
@@ -342,14 +344,23 @@ class ConnectionManager:
                         except Exception as e:
                             logger.warning(f"Failed to process Redis message: {e}")
                             
-                await pubsub.unsubscribe()
-                await redis_client.close()
-                
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Redis listener error: {e}")
                 await asyncio.sleep(5)  # Retry after delay
+            finally:
+                # Always clean up connections to prevent leaks
+                if pubsub is not None:
+                    try:
+                        await pubsub.unsubscribe()
+                    except Exception:
+                        pass
+                if redis_client is not None:
+                    try:
+                        await redis_client.close()
+                    except Exception:
+                        pass
 
 
 # Global connection manager

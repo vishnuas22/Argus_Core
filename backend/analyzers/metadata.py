@@ -1219,13 +1219,14 @@ class MetadataAnalyzer(BaseAnalyzer):
         Returns:
             File bytes or None
         """
-        # TODO: Integrate with StorageClient
-        # In production:
-        # bytes_data = await storage.download_file("argus-uploads", file_key)
-        # return bytes_data
-        
-        logger.debug(f"Would load file from key: {file_key}")
-        return None
+        try:
+            from storage.storage import get_storage_client
+            storage = get_storage_client()
+            bytes_data = await storage.download_file("argus-uploads", file_key)
+            return bytes_data
+        except Exception as e:
+            logger.debug(f"Failed to load file from storage for key {file_key}: {e}")
+            return None
 
 
 # Singleton instance

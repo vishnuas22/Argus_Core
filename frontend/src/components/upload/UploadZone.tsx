@@ -1,173 +1,106 @@
 'use client';
 
-/**
- * Argus Core - Upload Zone Component
- * ===================================
- * Drag-and-drop file upload zone with validation feedback.
- * 
- * Implements: PRIME_FRONTEND_DOCUMENT.md - Section 2.2 - components/upload/UploadZone.tsx
- * 
- * Role: Primary file upload interface. Handles drag-drop and click-to-select.
- * Validates files client-side before allowing upload.
- * 
- * Integration:
- * - Imports: hooks/useFileValidation, store/uploadStore
- * - Outputs: Selected file to parent via onFileSelect callback
- * - Updates: uploadStore with file and validation state
- * 
- * Component Contract (P0):
- * - Props interface defined
- * - Loading state: Shows validation spinner during processing
- * - Error state: Displays validation errors inline
- * - Empty state: Shows instructions and accepted formats
- * - Accessibility: Keyboard navigation, screen reader support
- * - data-testid: upload-zone, upload-zone-input, upload-zone-error
- */
-
-import { useState, useCallback, useRef, type DragEvent, type ChangeEvent } from 'react';
-import { Upload, FileVideo, FileAudio, Image, AlertCircle, CheckCircle } from 'lucide-react';
+import { useCallback, useRef, useState, useId } from 'react';
+import { Upload, Loader2, AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useFileValidation } from '@/hooks/useFileValidation';
-import { useUploadStore } from '@/store/uploadStore';
-import { MAX_FILE_SIZE_MB, ALL_ACCEPTED_EXTENSIONS } from '@/lib/constants';
+import { MAX_FILE_SIZE_MB, ALL_ACCEPTED_TYPES } from '@/lib/constants';
 
-// ============== TYPES ==============
-
-export interface UploadZoneProps {
-  /** Callback when a valid file is selected */
+interface UploadZoneProps {
   onFileSelect?: (file: File) => void;
-  /** Maximum file size in MB */
-  maxSizeMB?: number;
-  /** Accepted MIME types */
-  acceptedTypes?: string[];
-  /** Disable the upload zone */
   disabled?: boolean;
-  /** Additional CSS classes */
+  maxSizeMB?: number;
+  acceptedTypes?: string[];
   className?: string;
 }
 
-// ============== COMPONENT ==============
-
 export function UploadZone({
   onFileSelect,
-  maxSizeMB = MAX_FILE_SIZE_MB,
-  acceptedTypes,
   disabled = false,
+  maxSizeMB = MAX_FILE_SIZE_MB,
+  acceptedTypes = ALL_ACCEPTED_TYPES,
   className,
 }: UploadZoneProps) {
-  // Local state
+  const inputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const id = useId();
 
-  // Store and validation hook
-  const { setFile, setValidation, setError } = useUploadStore();
-  const { validate, generatePreview, errors, warnings, isValid } = useFileValidation({
-    maxSizeMB,
-    acceptedTypes,
-  });
+  const acceptedString = acceptedTypes.join(',');
 
-  /**
-   * Process file selection
-   */
   const processFile = useCallback(async (file: File) => {
-    if (disabled) return;
-    
     setIsValidating(true);
     setError(null);
 
-    try {
-      // Validate file
-      const result = await validate(file);
-      
-      // Generate preview
-      const preview = await generatePreview(file);
-      
-      // Update store
-      setFile(file, preview, result.fileInfo);
-      setValidation(result.isValid, result.errors, result.warnings);
-
-      // Notify parent if valid
-      if (result.isValid && onFileSelect) {
-        onFileSelect(file);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to process file');
-    } finally {
+    const maxBytes = maxSizeMB * 1024 * 1024;
+    if (file.size > maxBytes) {
+      setError(`File size exceeds ${maxSizeMB}MB limit`);
       setIsValidating(false);
+      return;
     }
-  }, [disabled, validate, generatePreview, setFile, setValidation, setError, onFileSelect]);
 
-  /**
-   * Handle drag events
-   */
-  const handleDragEnter = useCallback((e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!disabled) {
-      setIsDragging(true);
+    const isAccepted = acceptedTypes.some(t => file.type.startsWith(t.split('/')[0]));
+    if (!isAccepted) {
+      setError('Unsupported file type. Accepted: video, audio, image');
+      setIsValidating(false);
+      return;
     }
-  }, [disabled]);
 
-  const handleDragLeave = useCallback((e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-  }, []);
+    setIsValidating(false);
+    onFileSelect?.(file);
+  }, [maxSizeMB, acceptedTypes, onFileSelect]);
 
-  const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-  }, []);
-
-  const handleDrop = useCallback((e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-
-    if (disabled) return;
-
-    const files = e.dataTransfer.files;
-    if (files && files.length > 0) {
-      processFile(files[0]);
-    }
-  }, [disabled, processFile]);
-
-  /**
-   * Handle click to select file
-   */
   const handleClick = useCallback(() => {
-    if (!disabled && inputRef.current) {
-      inputRef.current.click();
-    }
+    if (disabled) return;
+    inputRef.current?.click();
   }, [disabled]);
 
-  /**
-   * Handle file input change
-   */
-  const handleFileChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) {
       processFile(files[0]);
     }
-    // Reset input value to allow re-selecting same file
     if (inputRef.current) {
       inputRef.current.value = '';
     }
   }, [processFile]);
 
-  /**
-   * Handle keyboard activation
-   */
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!disabled) setIsDragging(true);
+  }, [disabled]);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    if (disabled) return;
+
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      processFile(files[0]);
+    }
+  }, [disabled, processFile]);
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if ((e.key === 'Enter' || e.key === ' ') && !disabled) {
+    if (disabled) return;
+    if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       handleClick();
     }
   }, [disabled, handleClick]);
-
-  // Build accept string for input
-  const acceptString = ALL_ACCEPTED_EXTENSIONS.join(',');
 
   return (
     <div
@@ -176,126 +109,86 @@ export function UploadZone({
       tabIndex={disabled ? -1 : 0}
       aria-label="Upload file for analysis"
       aria-disabled={disabled}
-      onClick={handleClick}
       onKeyDown={handleKeyDown}
+      onClick={handleClick}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
       className={cn(
-        // Base styles
-        'relative flex flex-col items-center justify-center',
-        'w-full min-h-[280px] rounded-xl border-2 border-dashed',
-        'transition-all duration-200 ease-in-out cursor-pointer',
-        'focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2',
-        
-        // Default state
-        !isDragging && !disabled && 'border-border bg-muted/30 hover:bg-muted/50 hover:border-primary/50',
-        
-        // Dragging state
-        isDragging && 'border-primary bg-primary/5 scale-[1.02]',
-        
-        // Disabled state
-        disabled && 'opacity-50 cursor-not-allowed border-muted',
-        
-        // Error state
-        errors.length > 0 && 'border-destructive bg-destructive/5',
-        
+        'relative flex flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed p-8 text-center transition-all duration-300',
+        'hover:border-primary/30 hover:bg-muted/20',
+        'focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
+        isDragging && [
+          'border-primary scale-[1.02] bg-primary/5',
+          'shadow-lg shadow-primary/10',
+        ],
+        disabled && 'opacity-50 cursor-not-allowed hover:border-border hover:bg-transparent',
+        !disabled && 'cursor-pointer',
         className
       )}
     >
-      {/* Hidden file input */}
       <input
         ref={inputRef}
+        id={id}
         type="file"
-        accept={acceptString}
+        accept={acceptedString}
         onChange={handleFileChange}
-        disabled={disabled}
+        onClick={(e) => { e.stopPropagation(); }}
         className="hidden"
         data-testid="upload-zone-input"
         aria-hidden="true"
+        disabled={disabled}
       />
 
-      {/* Content */}
-      <div className="flex flex-col items-center gap-4 p-8 text-center">
-        {/* Icon */}
+      {isValidating ? (
+        <Loader2
+          className="h-10 w-10 text-muted-foreground animate-spin"
+          strokeWidth={1.5}
+        />
+      ) : (
+        <div className={cn('transition-transform duration-300', isDragging && 'animate-bounce')}>
+          <Upload
+            className="h-10 w-10 text-muted-foreground"
+            strokeWidth={1.5}
+          />
+        </div>
+      )}
+
+      <div className="space-y-1.5">
         {isValidating ? (
-          <div className="animate-spin rounded-full h-12 w-12 border-4 border-primary border-t-transparent" />
+          <p className="text-sm font-medium">Validating file...</p>
+        ) : isDragging ? (
+          <>
+            <p className="text-sm font-medium text-primary">Drop your file here</p>
+            <p className="text-2xs text-muted-foreground">Release to start upload</p>
+          </>
         ) : (
-          <div className={cn(
-            'p-4 rounded-full transition-colors',
-            isDragging ? 'bg-primary/10' : 'bg-muted'
-          )}>
-            <Upload 
-              className={cn(
-                'h-8 w-8 transition-colors',
-                isDragging ? 'text-primary' : 'text-muted-foreground'
-              )} 
-            />
-          </div>
-        )}
-
-        {/* Instructions */}
-        <div className="space-y-2">
-          <p className="text-lg font-medium text-foreground">
-            {isDragging ? 'Drop your file here' : 'Drop file or click to upload'}
-          </p>
-          <p className="text-sm text-muted-foreground">
-            Maximum file size: {maxSizeMB}MB
-          </p>
-        </div>
-
-        {/* Supported formats */}
-        <div className="flex items-center gap-6 text-xs text-muted-foreground">
-          <div className="flex items-center gap-1.5">
-            <FileVideo className="h-4 w-4" />
-            <span>MP4, WebM, MOV</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <FileAudio className="h-4 w-4" />
-            <span>MP3, WAV, OGG</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <Image className="h-4 w-4" />
-            <span>JPG, PNG, WebP</span>
-          </div>
-        </div>
-
-        {/* Validation errors */}
-        {errors.length > 0 && (
-          <div 
-            className="flex items-center gap-2 text-sm text-destructive mt-2"
-            data-testid="upload-zone-error"
-            role="alert"
-          >
-            <AlertCircle className="h-4 w-4 flex-shrink-0" />
-            <span>{errors[0].message}</span>
-          </div>
-        )}
-
-        {/* Validation warnings */}
-        {warnings.length > 0 && errors.length === 0 && (
-          <div className="flex items-center gap-2 text-sm text-yellow-600 dark:text-yellow-500 mt-2">
-            <AlertCircle className="h-4 w-4 flex-shrink-0" />
-            <span>{warnings[0].message}</span>
-          </div>
-        )}
-
-        {/* Success indicator */}
-        {isValid && errors.length === 0 && warnings.length === 0 && (
-          <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-500 mt-2">
-            <CheckCircle className="h-4 w-4 flex-shrink-0" />
-            <span>File ready for analysis</span>
-          </div>
+          <>
+            <p className="text-sm font-medium">Drop file or click to upload</p>
+            <p className="text-2xs text-muted-foreground">
+              Maximum file size: {maxSizeMB}MB
+            </p>
+          </>
         )}
       </div>
 
-      {/* Drag overlay */}
-      {isDragging && (
-        <div className="absolute inset-0 flex items-center justify-center bg-primary/5 rounded-xl pointer-events-none">
-          <div className="p-4 rounded-full bg-primary/10">
-            <Upload className="h-8 w-8 text-primary animate-bounce" />
-          </div>
+      <div className="flex gap-3 text-2xs text-muted-foreground">
+        <span>MP4, WebM, MOV</span>
+        <span className="text-border">|</span>
+        <span>MP3, WAV, OGG</span>
+        <span className="text-border">|</span>
+        <span>JPG, PNG, WebP</span>
+      </div>
+
+      {error && (
+        <div
+          data-testid="upload-zone-error"
+          role="alert"
+          className="flex items-center gap-1.5 text-xs text-destructive"
+        >
+          <AlertCircle className="h-3.5 w-3.5" />
+          <span>{error}</span>
         </div>
       )}
     </div>

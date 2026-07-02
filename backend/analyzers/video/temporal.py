@@ -30,14 +30,12 @@ from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
 import numpy as np
 from dataclasses import dataclass, field
 import time
+import cv2
 
 from analyzers.base import (
     SubAnalyzer,
-    normalize_scores,
     compute_confidence,
     detect_anomalies,
-    infer_fake_class_index,
-    extract_fake_probabilities,
 )
 from schemas.schemas import TemporalResult
 from config import config
@@ -46,14 +44,28 @@ from utils.errors import InferenceError
 from models.model_init import ensure_models_for_analyzer, is_model_ready
 import threading
 
+logger = get_logger(__name__)
+
+# Iteration 1: SOTA video temporal detectors (lazy import)
+# Iteration 4: added TimeSformerVideoDetector for further diversity
+try:
+    from detectors import (
+        VideoMAEDetector,
+        AltFreeVideoDetector,
+        TimeSformerVideoDetector,
+        combine_detector_results,
+    )
+    _SOTA_TEMPORAL_AVAILABLE = True
+except ImportError as _e:
+    _SOTA_TEMPORAL_AVAILABLE = False
+    logger.warning("SOTA temporal detectors unavailable: %s", _e)
+
 # PyTorch Model Cache
 _videomae_model = None
 _videomae_model_lock = threading.Lock()
 
 if TYPE_CHECKING:
     from core.engine import InferenceEngine
-
-logger = get_logger(__name__)
 
 
 @dataclass
@@ -180,7 +192,19 @@ class TemporalAnalyzer(SubAnalyzer):
             "landmark_jitter": 0.20,  # Facial landmark stability
             "color_consistency": 0.15 # Inter-frame color
         }
-        
+
+        # ===========================================================
+        # Iteration 1: SOTA video temporal detector ensemble
+        # Iteration 4: added TimeSformer as 3rd detector (cc-by-nc-4.0)
+        # ===========================================================
+        # VideoMAE-base + AltFree (CVPR 2024) + TimeSformer (ICML 2021) —
+        # fused via DiversityEnsemble. Lazy-initialized; auto-downweighted
+        # when adapter weights are missing.
+        # TimeSformer is gated by config.enable_timesformer (default True
+        # but OFF if non-commercial restriction is unacceptable).
+        self._sota_temporal_detectors = None
+        self._sota_temporal_prior_weights = [0.89, 0.86, 0.84]  # VideoMAE, AltFree, TimeSformer
+
         logger.info(
             f"TemporalAnalyzer initialized: seq_len={sequence_length}, "
             f"weights={self.weights}"
@@ -252,9 +276,74 @@ class TemporalAnalyzer(SubAnalyzer):
             self.weights["landmark_jitter"] * jitter_score +
             self.weights["color_consistency"] * color_score
         )
-        
+
+        # ===========================================================
+        # Iteration 1 — SOTA video temporal ensemble integration
+        # (additive, strict-compat)
+        # ===========================================================
+        # Run VideoMAE (fine-tuned) + AltFree on the same frame sequence
+        # and fuse their outputs via DiversityEnsemble. The resulting
+        # fake probability is blended with the legacy inconsistency
+        # score: 60% SOTA ensemble, 40% legacy heuristics.
+        if (
+            getattr(config, "enable_sota_detectors", False)
+            and _SOTA_TEMPORAL_AVAILABLE
+            and len(frame_sequence) >= 2
+        ):
+            try:
+                sota_fake_prob = await self._run_sota_temporal_ensemble(
+                    frame_sequence
+                )
+                if sota_fake_prob is not None:
+                    # Legacy inconsistency is in [0,1] (1 = max fake).
+                    # Blend in fake-probability space, then convert back.
+                    legacy_fake_prob = float(combined_inconsistency)
+                    blended_fake_prob = 0.6 * sota_fake_prob + 0.4 * legacy_fake_prob
+                    combined_inconsistency = float(
+                        np.clip(blended_fake_prob, 0.0, 1.0)
+                    )
+                    logger.info(
+                        "SOTA temporal ensemble integrated: sota=%.4f, blended=%.4f",
+                        sota_fake_prob, combined_inconsistency,
+                    )
+            except Exception as e:
+                logger.warning("SOTA temporal ensemble failed (non-fatal): %s", e)
+
         consistency_score = 1.0 - combined_inconsistency
         consistency_score = float(np.clip(consistency_score, 0, 1))
+
+        # ===========================================================
+        # Iteration 3 — Post-processing (calibration + conformal)
+        # (additive, strict-compat)
+        # ===========================================================
+        try:
+            from core.post_processing import apply_post_processing
+            # Convert consistency_score to fake_prob for calibration
+            # consistency_score: 1 = real, 0 = fake → fake_prob = 1 - consistency
+            fake_prob_for_cal = 1.0 - consistency_score
+            _synth = np.array([
+                fake_prob_for_cal,
+                flow_features.flow_consistency,
+                color_features.color_shift_detected if color_features else 0.0,
+                float(len(color_features.affected_frames)) if color_features else 0.0,
+                float(flow_features.sudden_motion_count),
+            ], dtype=np.float64)
+            pp = apply_post_processing(
+                score=fake_prob_for_cal,
+                confidence=abs(consistency_score - 0.5) * 2,  # extremity as confidence
+                embedding=_synth,
+                modality="video",
+                analysis_id="",
+            )
+            if pp.calibrated_score != pp.original_score:
+                logger.info(
+                    "Temporal temperature scaling: %.4f -> %.4f (T=%.4f)",
+                    pp.original_score, pp.calibrated_score, pp.temperature,
+                )
+                # Convert back to consistency_score
+                consistency_score = 1.0 - pp.calibrated_score
+        except Exception as e:
+            logger.debug("Temporal post-processing failed (non-fatal): %s", e)
         
         # 6. Detect flickering
         flickering_detected = self._detect_flickering(
@@ -289,7 +378,59 @@ class TemporalAnalyzer(SubAnalyzer):
             flickering_detected=flickering_detected,
             anomaly_timestamps=anomaly_timestamps
         )
-    
+
+    # ------------------------------------------------------------------
+    # Iteration 1: SOTA video temporal ensemble helper
+    # ------------------------------------------------------------------
+    async def _run_sota_temporal_ensemble(
+        self,
+        frame_sequence: List[np.ndarray],
+    ) -> Optional[float]:
+        """
+        Run VideoMAE (fine-tuned) + AltFree on the frame sequence and
+        fuse their outputs via DiversityEnsemble.
+
+        Args:
+            frame_sequence: List of HxWx3 RGB frames (any resolution).
+
+        Returns:
+            Fused fake probability in [0, 1], or None on failure.
+        """
+        if not frame_sequence:
+            return None
+
+        if self._sota_temporal_detectors is None:
+            detectors = [
+                VideoMAEDetector(),
+                AltFreeVideoDetector(),
+            ]
+            # Iteration 4: add TimeSformer if enabled (cc-by-nc-4.0 license)
+            if getattr(config, "enable_timesformer", True):
+                try:
+                    detectors.append(TimeSformerVideoDetector())
+                except Exception as e:
+                    logger.warning("TimeSformer init failed (non-fatal): %s", e)
+            self._sota_temporal_detectors = detectors
+
+        detector_results = []
+        for det in self._sota_temporal_detectors:
+            try:
+                r = await det.detect(frame_sequence)
+                detector_results.append(r)
+            except Exception as e:
+                logger.warning("SOTA temporal detector %s failed: %s", det.name, e)
+
+        if not detector_results:
+            return None
+
+        fused = combine_detector_results(
+            detector_results,
+            prior_weights=self._sota_temporal_prior_weights[:len(detector_results)],
+        )
+        if fused.error and "all_members_failed" in fused.error:
+            return None
+        return float(fused.score)
+
     async def _run_videomae_analysis(
         self,
         frames: List[np.ndarray],
@@ -315,8 +456,10 @@ class TemporalAnalyzer(SubAnalyzer):
             with _videomae_model_lock:
                 if _videomae_model is None:
                     _videomae_model = VideoMAEDeepfakeDetector()
-                    if config.use_gpu and torch.cuda.is_available():
-                        _videomae_model = _videomae_model.cuda()
+                    _device = config.device
+                    if _device != "cpu":
+                        _videomae_model = _videomae_model.to(_device)
+                        logger.info("VideoMAE moved to %s", _device)
                     _videomae_model.eval()
             
             preprocessed = self._preprocess_sequence(frames)
@@ -324,8 +467,9 @@ class TemporalAnalyzer(SubAnalyzer):
             # VideoMAE expects (B, T, C, H, W)
             input_tensor = torch.from_numpy(preprocessed).unsqueeze(0)
             
-            if config.use_gpu and torch.cuda.is_available():
-                input_tensor = input_tensor.cuda()
+            _device = config.device
+            if _device != "cpu":
+                input_tensor = input_tensor.to(_device)
                 
             with torch.no_grad():
                 logits = _videomae_model(input_tensor)
@@ -486,6 +630,11 @@ class TemporalAnalyzer(SubAnalyzer):
         Deepfakes often have jittery landmarks due to per-frame
         generation inconsistencies.
         
+        Uses a three-tier detection strategy:
+        1. RetinaFace ONNX via InferenceEngine (most accurate)
+        2. OpenCV DNN face detector (good accuracy, no extra deps)
+        3. Frame-difference proxy (fallback only)
+        
         Args:
             frames: Frame sequence
             engine: InferenceEngine for face detection
@@ -493,15 +642,268 @@ class TemporalAnalyzer(SubAnalyzer):
         Returns:
             LandmarkJitterFeatures
         """
-        # In production, this would:
-        # 1. Run face detection on each frame
-        # 2. Track landmark positions across frames
-        # 3. Compute jitter metrics
-        
-        # Simplified version using frame differences
         if len(frames) < 2:
             return LandmarkJitterFeatures(mean_jitter=0.0)
         
+        # Try to extract real facial landmarks
+        landmarks_sequence = await self._extract_face_landmarks(frames, engine)
+        
+        if landmarks_sequence is not None and len(landmarks_sequence) >= 2:
+            # Use real landmark tracking
+            return self._compute_landmark_jitter_from_tracking(landmarks_sequence)
+        
+        # Fallback: frame-difference proxy (legacy behavior)
+        return self._compute_landmark_jitter_from_framediff(frames)
+    
+    async def _extract_face_landmarks(
+        self,
+        frames: List[np.ndarray],
+        engine: "InferenceEngine"
+    ) -> Optional[List[Dict[str, Tuple[float, float]]]]:
+        """
+        Extract facial landmarks from each frame using available detectors.
+        
+        Returns list of landmark dicts with keys: left_eye, right_eye, nose,
+        mouth_left, mouth_right. Returns None if no detector is available.
+        """
+        # Tier 1: Try RetinaFace ONNX via InferenceEngine
+        landmarks = await self._extract_landmarks_retinaface(frames, engine)
+        if landmarks is not None:
+            return landmarks
+        
+        # Tier 2: Try OpenCV DNN face detector (Caffe model)
+        landmarks = self._extract_landmarks_opencv_dnn(frames)
+        if landmarks is not None:
+            return landmarks
+        
+        return None
+    
+    async def _extract_landmarks_retinaface(
+        self,
+        frames: List[np.ndarray],
+        engine: "InferenceEngine"
+    ) -> Optional[List[Dict[str, Tuple[float, float]]]]:
+        """
+        Extract landmarks using RetinaFace ONNX model via InferenceEngine.
+        
+        RetinaFace outputs: [batch, num_anchors, 15]
+        where 15 = 4 (bbox) + 1 (confidence) + 10 (5 landmarks × 2 coords)
+        """
+        try:
+            if not is_model_ready("retinaface"):
+                return None
+            
+            landmarks_sequence = []
+            
+            for frame in frames:
+                # Preprocess: resize to 640x640, normalize to [0,1], NCHW
+                if frame.dtype in [np.float32, np.float64] and frame.max() <= 1.0:
+                    frame_uint8 = (frame * 255).astype(np.uint8)
+                else:
+                    frame_uint8 = frame.astype(np.uint8)
+                
+                h_orig, w_orig = frame_uint8.shape[:2]
+                resized = cv2.resize(frame_uint8, (640, 640))
+                blob = resized.astype(np.float32).transpose(2, 0, 1)[np.newaxis, :] / 255.0
+                
+                # Run inference
+                result = await engine.infer("retinaface", blob, return_probabilities=False)
+                predictions = result.predictions  # [1, num_anchors, 15]
+                
+                # Decode detections
+                frame_landmarks = self._decode_retinaface_output(
+                    predictions[0], w_orig, h_orig, conf_threshold=0.5
+                )
+                
+                if frame_landmarks is not None:
+                    landmarks_sequence.append(frame_landmarks)
+                else:
+                    landmarks_sequence.append(None)
+            
+            # Check if we got landmarks for at least 50% of frames
+            valid_count = sum(1 for l in landmarks_sequence if l is not None)
+            if valid_count >= len(frames) * 0.5:
+                return landmarks_sequence
+            return None
+            
+        except Exception as e:
+            logger.debug(f"RetinaFace landmark extraction failed: {e}")
+            return None
+    
+    def _decode_retinaface_output(
+        self,
+        predictions: np.ndarray,
+        w_orig: int,
+        h_orig: int,
+        conf_threshold: float = 0.5
+    ) -> Optional[Dict[str, Tuple[float, float]]]:
+        """
+        Decode RetinaFace raw output into landmark coordinates.
+        
+        Args:
+            predictions: [num_anchors, 15] array
+            w_orig, h_orig: Original image dimensions
+            conf_threshold: Minimum confidence threshold
+            
+        Returns:
+            Dict of landmark name -> (x, y) in original image coords, or None
+        """
+        # Extract confidence scores (index 4)
+        scores = predictions[:, 4]
+        
+        # Filter by confidence
+        mask = scores > conf_threshold
+        if not np.any(mask):
+            return None
+        
+        filtered = predictions[mask]
+        scores_filtered = scores[mask]
+        
+        # Get best detection
+        best_idx = np.argmax(scores_filtered)
+        best = filtered[best_idx]
+        
+        # Extract 5 landmarks (indices 5-14): left_eye, right_eye, nose, mouth_left, mouth_right
+        # Each landmark is (x, y) in 640x640 space
+        landmark_names = ["left_eye", "right_eye", "nose", "mouth_left", "mouth_right"]
+        landmarks = {}
+        
+        scale_x = w_orig / 640.0
+        scale_y = h_orig / 640.0
+        
+        for i, name in enumerate(landmark_names):
+            x = best[5 + i * 2] * scale_x
+            y = best[6 + i * 2] * scale_y
+            landmarks[name] = (float(x), float(y))
+        
+        return landmarks
+    
+    def _extract_landmarks_opencv_dnn(
+        self,
+        frames: List[np.ndarray]
+    ) -> Optional[List[Dict[str, Tuple[float, float]]]]:
+        """
+        Fallback: Extract face bounding boxes using OpenCV's built-in
+        face detector and derive approximate landmark positions.
+        
+        Less accurate than RetinaFace but requires zero extra dependencies.
+        """
+        try:
+            # Use OpenCV's Haar cascade (always available)
+            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            face_cascade = cv2.CascadeClassifier(cascade_path)
+            
+            if face_cascade.empty():
+                return None
+            
+            landmarks_sequence = []
+            
+            for frame in frames:
+                if frame.dtype in [np.float32, np.float64] and frame.max() <= 1.0:
+                    gray = cv2.cvtColor((frame * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
+                else:
+                    gray = cv2.cvtColor(frame.astype(np.uint8), cv2.COLOR_RGB2GRAY)
+                
+                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+                
+                if len(faces) > 0:
+                    # Use largest face
+                    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                    
+                    # Derive approximate landmark positions from bounding box
+                    # These are rough estimates based on average face proportions
+                    landmarks = {
+                        "left_eye": (x + w * 0.35, y + h * 0.35),
+                        "right_eye": (x + w * 0.65, y + h * 0.35),
+                        "nose": (x + w * 0.50, y + h * 0.55),
+                        "mouth_left": (x + w * 0.30, y + h * 0.75),
+                        "mouth_right": (x + w * 0.70, y + h * 0.75),
+                    }
+                    landmarks_sequence.append(landmarks)
+                else:
+                    landmarks_sequence.append(None)
+            
+            valid_count = sum(1 for l in landmarks_sequence if l is not None)
+            if valid_count >= len(frames) * 0.5:
+                return landmarks_sequence
+            return None
+            
+        except Exception as e:
+            logger.debug(f"OpenCV face detection failed: {e}")
+            return None
+    
+    def _compute_landmark_jitter_from_tracking(
+        self,
+        landmarks_sequence: List[Optional[Dict[str, Tuple[float, float]]]]
+    ) -> LandmarkJitterFeatures:
+        """
+        Compute jitter metrics from tracked landmark positions.
+        
+        Analyzes frame-to-frame displacement of each landmark,
+        focusing on eye, nose, and mouth stability.
+        """
+        # Filter to frames with valid landmarks
+        valid_frames = [(i, lm) for i, lm in enumerate(landmarks_sequence) if lm is not None]
+        
+        if len(valid_frames) < 2:
+            return LandmarkJitterFeatures(mean_jitter=0.0)
+        
+        # Compute per-landmark displacement between consecutive valid frames
+        landmark_names = ["left_eye", "right_eye", "nose", "mouth_left", "mouth_right"]
+        all_displacements = {name: [] for name in landmark_names}
+        
+        for idx in range(1, len(valid_frames)):
+            prev_lm = valid_frames[idx - 1][1]
+            curr_lm = valid_frames[idx][1]
+            
+            for name in landmark_names:
+                if name in prev_lm and name in curr_lm:
+                    px, py = prev_lm[name]
+                    cx, cy = curr_lm[name]
+                    displacement = np.sqrt((cx - px) ** 2 + (cy - py) ** 2)
+                    all_displacements[name].append(displacement)
+        
+        # Compute jitter metrics
+        all_values = []
+        for name in landmark_names:
+            if all_displacements[name]:
+                all_values.extend(all_displacements[name])
+        
+        if not all_values:
+            return LandmarkJitterFeatures(mean_jitter=0.0)
+        
+        mean_jitter = float(np.mean(all_values))
+        max_jitter = float(np.max(all_values))
+        jitter_variance = float(np.var(all_values))
+        
+        # Identify unstable regions
+        unstable_regions = []
+        mouth_displacements = all_displacements["mouth_left"] + all_displacements["mouth_right"]
+        eye_displacements = all_displacements["left_eye"] + all_displacements["right_eye"]
+        
+        if mouth_displacements and np.mean(mouth_displacements) > mean_jitter * 1.5:
+            unstable_regions.append("mouth")
+        if eye_displacements and np.mean(eye_displacements) > mean_jitter * 1.5:
+            unstable_regions.append("eyes")
+        if jitter_variance > mean_jitter * 2:
+            unstable_regions.append("face")
+        
+        return LandmarkJitterFeatures(
+            mean_jitter=mean_jitter,
+            max_jitter=max_jitter,
+            jitter_variance=jitter_variance,
+            unstable_regions=unstable_regions
+        )
+    
+    def _compute_landmark_jitter_from_framediff(
+        self,
+        frames: List[np.ndarray]
+    ) -> LandmarkJitterFeatures:
+        """
+        Fallback jitter estimation using frame differences.
+        
+        Used when no face detector is available.
+        """
         jitters = []
         prev_frame = None
         
@@ -511,13 +913,9 @@ class TemporalAnalyzer(SubAnalyzer):
                     frame = (frame * 255).astype(np.uint8)
             
             if prev_frame is not None:
-                # Simple frame difference as proxy for jitter
                 diff = np.abs(frame.astype(np.float32) - prev_frame.astype(np.float32))
-                
-                # Focus on face region (center of frame)
                 h, w = diff.shape[:2]
                 face_region = diff[h//4:3*h//4, w//4:3*w//4]
-                
                 jitter = np.mean(face_region) / 255.0
                 jitters.append(jitter)
             
@@ -526,14 +924,13 @@ class TemporalAnalyzer(SubAnalyzer):
         if not jitters:
             return LandmarkJitterFeatures(mean_jitter=0.0)
         
-        # Identify unstable regions
         unstable_regions = []
         mean_jitter = np.mean(jitters)
         
         if mean_jitter > self.jitter_threshold:
             unstable_regions.append("face")
         if max(jitters) > self.jitter_threshold * 2:
-            unstable_regions.append("mouth")  # Often most jittery in deepfakes
+            unstable_regions.append("mouth")
         
         return LandmarkJitterFeatures(
             mean_jitter=float(mean_jitter),

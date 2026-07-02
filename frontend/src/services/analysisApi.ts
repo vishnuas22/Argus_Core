@@ -26,7 +26,6 @@ import type {
   VisualEvidence,
   ScientificReference,
   AudioArtifactRegion,
-  TokenAttribution,
   ManipulationRegion,
   EvidencePackage,
 } from '@/types/analysis';
@@ -52,10 +51,6 @@ export interface XAIResponse {
     explanation: XAIExplanation;
     artifact_regions: AudioArtifactRegion[];
     spectrogram_overlay_url: string | null;
-  };
-  text_xai?: {
-    explanation: XAIExplanation;
-    token_attributions: TokenAttribution[];
   };
   evidence_package?: EvidencePackage;
 }
@@ -89,7 +84,6 @@ export const analysisApi = {
     }
 
     const response = await api.post<AnalysisResponse>('/api/v1/analyze', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 120000, // 2 minute timeout for large uploads
       onUploadProgress: (event) => {
         if (event.total && onUploadProgress) {
@@ -97,29 +91,6 @@ export const analysisApi = {
           onUploadProgress(progress);
         }
       },
-    });
-
-    return transformAnalysisResponse(response.data);
-  },
-
-  /**
-   * Submit text for AI-generated content analysis
-   * POST /api/v1/analyze/text
-   * 
-   * @param text - Text content to analyze
-   * @param generateReport - Generate PDF report
-   * @returns Analysis response with analysis_id
-   */
-  submitTextAnalysis: async (
-    text: string,
-    generateReport: boolean = false
-  ): Promise<AnalysisResponse> => {
-    const formData = new FormData();
-    formData.append('text', text);
-    formData.append('generate_report', String(generateReport));
-
-    const response = await api.post<AnalysisResponse>('/api/v1/analyze/text', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
     });
 
     return transformAnalysisResponse(response.data);
@@ -226,33 +197,87 @@ export const analysisApi = {
 
 /**
  * Transform backend snake_case response to frontend camelCase
+ * 
+ * Backend TrustScore has {value, confidence, calibrated}
+ * Frontend expects {overall, confidence, breakdown}
  */
-function transformAnalysisResponse(data: AnalysisResponse | Record<string, unknown>): AnalysisResponse {
+function transformAnalysisResponse(data: Record<string, unknown> | AnalysisResponse): AnalysisResponse {
+  const d = data as Record<string, unknown>;
+  const rawTrust = d.trust_score as Record<string, unknown> | undefined;
+  let trust_score: AnalysisResponse['trust_score'] = undefined;
+  if (rawTrust) {
+    trust_score = {
+      overall: Math.round((rawTrust.value as number) * 10) / 10,
+      confidence: rawTrust.confidence as number,
+      breakdown: {
+        weights: {},
+      },
+    };
+  }
+
   return {
-    analysis_id: data.analysis_id as string,
-    status: data.status as AnalysisResponse['status'],
-    trust_score: data.trust_score as AnalysisResponse['trust_score'],
-    verdict: data.verdict as AnalysisResponse['verdict'],
-    explanation: data.explanation as AnalysisResponse['explanation'],
-    report_url: data.report_url as string | undefined,
-    created_at: data.created_at as string,
-    completed_at: data.completed_at as string | undefined,
+    analysis_id: d.analysis_id as string,
+    status: d.status as AnalysisResponse['status'],
+    trust_score,
+    verdict: d.verdict as AnalysisResponse['verdict'],
+    explanation: d.explanation as AnalysisResponse['explanation'],
+    report_url: d.report_url as string | undefined,
+    created_at: d.created_at as string,
+    completed_at: d.completed_at as string | undefined,
   };
 }
 
 /**
  * Transform detailed response
  */
-function transformDetailResponse(data: AnalysisDetailResponse | Record<string, unknown>): AnalysisDetailResponse {
+function transformDetailResponse(data: Record<string, unknown> | AnalysisDetailResponse): AnalysisDetailResponse {
+  const base = transformAnalysisResponse(data);
+
+  const imgRes = data.image_result as Record<string, unknown> | undefined;
+  const vidRes = data.video_result as Record<string, unknown> | undefined;
+  const audRes = data.audio_result as Record<string, unknown> | undefined;
+
+  if (base.trust_score) {
+    const weights: Record<string, number> = {};
+    const breakdown: Record<string, number> = {};
+
+    if (imgRes && typeof imgRes.fake_probability === 'number') {
+      breakdown.image = (imgRes.fake_probability as number) * 100;
+      weights.image = 1;
+    }
+    if (vidRes) {
+      const spat = (vidRes as Record<string, unknown>).spatial as Record<string, number> | undefined;
+      const temp = (vidRes as Record<string, unknown>).temporal as Record<string, number> | undefined;
+      if (spat && typeof spat.score === 'number') {
+        breakdown.video_spatial = spat.score * 100;
+        weights.video_spatial = 1;
+      }
+      const tempScore = temp && (temp.consistency_score ?? temp.score);
+      if (typeof tempScore === 'number') {
+        breakdown.video_temporal = tempScore * 100;
+        weights.video_temporal = 1;
+      }
+    }
+    if (audRes && typeof (audRes as Record<string, unknown>).synthetic_probability === 'number') {
+      breakdown.audio = ((audRes as Record<string, unknown>).synthetic_probability as number) * 100;
+      weights.audio = 1;
+    }
+
+    base.trust_score.breakdown = {
+      ...base.trust_score.breakdown,
+      ...breakdown,
+      weights,
+    };
+  }
+
   return {
-    ...transformAnalysisResponse(data),
+    ...base,
     input: data.input as AnalysisDetailResponse['input'],
     video_result: data.video_result as AnalysisDetailResponse['video_result'],
     audio_result: data.audio_result as AnalysisDetailResponse['audio_result'],
     image_result: data.image_result as AnalysisDetailResponse['image_result'],
     metadata_result: data.metadata_result as AnalysisDetailResponse['metadata_result'],
     processing_time_seconds: data.processing_time_seconds as number | undefined,
-    // XAI Enhancement Fields
     evidence_package: data.evidence_package as AnalysisDetailResponse['evidence_package'],
     feature_importance: (data.feature_importance || []) as AnalysisDetailResponse['feature_importance'],
     scientific_references: (data.scientific_references || []) as AnalysisDetailResponse['scientific_references'],

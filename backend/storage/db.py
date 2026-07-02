@@ -461,15 +461,51 @@ class DatabaseClient:
 
 # Singleton instance
 _db_client: Optional[DatabaseClient] = None
+_db_client_lock = None  # Initialized lazily to avoid issues at import time
 
 
 async def get_db_client() -> DatabaseClient:
-    """Get singleton database client instance."""
-    global _db_client
-    if _db_client is None:
+    """Get singleton database client instance.
+    
+    M9 fix: Detect event loop changes (e.g., Celery worker creates
+    a new loop per task via asyncio.run()). If the loop changed,
+    close the stale Motor client and reconnect on the new loop.
+    """
+    global _db_client, _db_client_lock
+    
+    import asyncio
+    current_loop = None
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    
+    # Fast path: already initialized on the same loop
+    if _db_client is not None and _db_client._client is not None:
+        try:
+            # Check if the Motor client's loop is still the current one
+            client_loop = _db_client._client._io_loop
+            if client_loop is not None and client_loop is not current_loop:
+                # Event loop changed — close stale client
+                logger.debug("Event loop changed, reconnecting Motor client")
+                await _db_client.disconnect()
+                _db_client = None
+        except (AttributeError, Exception):
+            pass
+        if _db_client is not None:
+            return _db_client
+    
+    # Slow path: initialize with lock to prevent double-init
+    if _db_client_lock is None:
+        _db_client_lock = asyncio.Lock()
+    
+    async with _db_client_lock:
+        # Double-check after acquiring lock
+        if _db_client is not None:
+            return _db_client
         _db_client = DatabaseClient()
         await _db_client.connect()
-    return _db_client
+        return _db_client
 
 
 async def close_db_client() -> None:

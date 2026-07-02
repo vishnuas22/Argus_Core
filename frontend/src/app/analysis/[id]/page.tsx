@@ -14,7 +14,6 @@ import {
   FileVideo,
   FileAudio,
   FileImage,
-  FileText,
   Info,
   Clock,
   Hash,
@@ -31,7 +30,7 @@ import { useProgressStore, selectProgress } from '@/store/progressStore';
 
 import { ProgressIndicator, ProgressIndicatorSkeleton } from '@/components/analysis/ProgressIndicator';
 import { AnalysisTimeline, AnalysisTimelineSkeleton } from '@/components/analysis/AnalysisTimeline';
-import { XAIExplanationPanel } from '@/components/xai';
+import { XAIExplanationPanel, XAIAttributionPanel } from '@/components/xai';
 import { ChatContainer } from '@/components/chat';
 import { ErrorBoundary } from '@/components/errors/ErrorBoundary';
 
@@ -452,9 +451,6 @@ export default function AnalysisPage({ params }: AnalysisPageProps) {
                         {trustScore.breakdown.audio !== undefined && (
                           <ScoreRow label="Audio Analysis" score={trustScore.breakdown.audio * 100} icon={FileAudio} />
                         )}
-                        {trustScore.breakdown.text !== undefined && (
-                          <ScoreRow label="Text Analysis" score={trustScore.breakdown.text * 100} icon={FileText} />
-                        )}
                         {trustScore.breakdown.metadata !== undefined && (
                           <ScoreRow label="Metadata" score={trustScore.breakdown.metadata * 100} icon={FileImage} />
                         )}
@@ -554,6 +550,23 @@ export default function AnalysisPage({ params }: AnalysisPageProps) {
                   showReferences
                   showReproducibility
                   defaultExpanded
+                />
+              )}
+
+              {isComplete && (
+                <XAIAttributionPanel
+                  xai_attribution={
+                    // Extract from the first available modality result.
+                    // The backend's ModalityResult now includes xai_attribution,
+                    // conformal_prediction_set, and route_to_human fields.
+                    (detail?.image_result as any)?.xai_attribution ?? null
+                  }
+                  conformal_prediction_set={
+                    (detail?.image_result as any)?.conformal_prediction_set ?? null
+                  }
+                  route_to_human={
+                    (detail?.image_result as any)?.route_to_human ?? false
+                  }
                 />
               )}
 

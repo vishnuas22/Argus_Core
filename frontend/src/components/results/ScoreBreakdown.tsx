@@ -45,7 +45,6 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { 
   Video, 
   AudioLines, 
-  FileText, 
   FileSearch2, 
   Clock, 
   Mic2,
@@ -95,7 +94,7 @@ interface BreakdownItem {
   /** Icon component */
   icon: LucideIcon;
   /** Category grouping */
-  category: 'video' | 'audio' | 'text' | 'metadata';
+  category: 'video' | 'audio' | 'metadata';
 }
 
 // ============== CONSTANTS ==============
@@ -108,7 +107,7 @@ const MODALITY_CONFIG: Record<string, {
   label: string;
   description: string;
   icon: LucideIcon;
-  category: 'video' | 'audio' | 'text' | 'metadata';
+  category: 'video' | 'audio' | 'metadata';
 }> = {
   video_spatial: {
     label: 'Video (Spatial)',
@@ -134,12 +133,6 @@ const MODALITY_CONFIG: Record<string, {
     icon: AudioLines,
     category: 'audio',
   },
-  text: {
-    label: 'Text Analysis',
-    description: 'AI-generated text detection via perplexity',
-    icon: FileText,
-    category: 'text',
-  },
   metadata: {
     label: 'Metadata',
     description: 'C2PA provenance and EXIF integrity checks',
@@ -154,7 +147,6 @@ const MODALITY_CONFIG: Record<string, {
 const CATEGORY_COLORS: Record<string, string> = {
   video: 'text-blue-500',
   audio: 'text-purple-500',
-  text: 'text-amber-500',
   metadata: 'text-slate-500',
 };
 
@@ -236,7 +228,6 @@ export function ScoreBreakdown({
     processModality('video_temporal', breakdown.video_temporal);
     processModality('video_lipsync', breakdown.video_lipsync);
     processModality('audio', breakdown.audio);
-    processModality('text', breakdown.text);
     processModality('metadata', breakdown.metadata);
     
     // Sort by weight (most important first)
@@ -582,7 +573,6 @@ function getDefaultWeight(key: string): number {
     video_temporal: 0.25,
     video_lipsync: 0.10,
     audio: 0.20,
-    text: 0.10,
     metadata: 0.15,
   };
   return defaults[key] || 0.1;

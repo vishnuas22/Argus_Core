@@ -21,7 +21,6 @@ Endpoints:
 - GET /api/v1/analyze/{analysis_id} - Get analysis status/result
 - GET /api/v1/analyze/{analysis_id}/detail - Get detailed results
 - DELETE /api/v1/analyze/{analysis_id} - Delete analysis
-- POST /api/v1/analyze/text - Analyze text for AI generation
 - GET /api/v1/health - Health check
 - GET /api/v1/models - List available models
 """
@@ -31,6 +30,9 @@ from typing import Optional, List
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, Path, HTTPException, status, BackgroundTasks
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from pydantic import BaseModel, Field
+from typing import Literal
 from fastapi.responses import JSONResponse
 
 from config import config
@@ -71,9 +73,7 @@ router = APIRouter(prefix="/api/v1", tags=["analysis"])
     - Images: JPEG, PNG, WebP
     - Videos: MP4, WebM, MOV, AVI
     - Audio: MP3, WAV, OGG
-    - Text: Plain text (use /analyze/text endpoint instead)
-    
-    The analysis runs asynchronously. Use the returned analysis_id
+        The analysis runs asynchronously. Use the returned analysis_id
     to poll for results via GET /analyze/{analysis_id}.
     
     Maximum file size: 500MB
@@ -116,9 +116,29 @@ async def analyze_media(
     )
     
     try:
-        # Read file content
-        file_content = await file.read()
-        
+        # M2 fix: stream file to memory with size cap to prevent OOM.
+        # Previously: file_content = await file.read() loaded the entire
+        # file (up to 500MB) into memory before size validation.
+        # Now: read in 8MB chunks and abort if over the limit.
+        import tempfile
+        max_bytes = config.max_file_size_mb * 1024 * 1024
+        file_content = b""
+        total_read = 0
+        while True:
+            chunk = await file.read(8 * 1024 * 1024)  # 8MB chunks
+            if not chunk:
+                break
+            total_read += len(chunk)
+            if total_read > max_bytes:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail={
+                        "error_code": "FILE_TOO_LARGE",
+                        "message": f"File exceeds maximum size of {config.max_file_size_mb}MB",
+                    }
+                )
+            file_content += chunk
+
         # Validate and sanitize file
         sanitizer = InputSanitizer(defense_level=defense_level)
         sanitized = await sanitizer.validate(
@@ -130,11 +150,42 @@ async def analyze_media(
         # Parse modalities if provided
         parsed_modalities = None
         if modalities:
-            parsed_modalities = [
-                Modality(m.strip().lower()) 
-                for m in modalities.split(",") 
-                if m.strip()
-            ]
+            try:
+                parsed_modalities = [
+                    Modality(m.strip().lower()) 
+                    for m in modalities.split(",") 
+                    if m.strip()
+                ]
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error_code": "INVALID_MODALITY",
+                        "message": f"'{modalities}' is not a valid modality value"
+                    }
+                )
+        
+        # Validate that file type matches requested modalities
+        if parsed_modalities:
+            # Map file type to modality for validation
+            file_modality = None
+            if sanitized.is_image:
+                file_modality = "image"
+            elif sanitized.is_video:
+                file_modality = "video"
+            elif sanitized.is_audio:
+                file_modality = "audio"
+            elif sanitized.is_text:
+                file_modality = "text"
+            modality_values = {m.value if hasattr(m, 'value') else str(m).lower() for m in parsed_modalities}
+            if file_modality and file_modality not in modality_values:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "error_code": "MODALITY_MISMATCH",
+                        "message": f"File type '{sanitized.file_type.value}' does not match requested modalities: {modality_values}"
+                    }
+                )
         
         # Create analysis options
         options = AnalyzeOptions(
@@ -218,6 +269,8 @@ async def analyze_media(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=e.to_dict()
         )
+    except (HTTPException, StarletteHTTPException):
+        raise
     except Exception as e:
         logger.error(f"Analysis creation failed: {e}", exc_info=True)
         raise HTTPException(
@@ -246,11 +299,12 @@ async def analyze_media(
 )
 async def get_analysis(
     analysis_id: str = Path(..., description="Analysis ID"),
-    db: DatabaseClient = Depends(get_db)
+    db: DatabaseClient = Depends(get_db),
+    user: dict = Depends(get_current_user)  # C5 fix: require auth
 ):
     """Get analysis status and basic results."""
     analysis = await db.get_analysis(analysis_id)
-    
+
     if analysis is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -258,6 +312,21 @@ async def get_analysis(
                 "error_code": "ANALYSIS_NOT_FOUND",
                 "message": f"Analysis not found: {analysis_id}",
                 "details": {"analysis_id": analysis_id}
+            }
+        )
+
+    # C5 fix: ownership check (IDOR prevention)
+    # In dev mode with auth disabled, user may be a guest — allow access
+    # In production, verify the user owns the analysis or is admin
+    _user_id = user.get("user_id", "") if user else ""
+    _is_admin = "admin" in (user.get("roles", []) if user else [])
+    _owner_id = getattr(analysis, 'owner_id', None) or getattr(analysis, 'user_id', None)
+    if _owner_id and _user_id and _owner_id != _user_id and not _is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error_code": "NOT_AUTHORIZED",
+                "message": "You do not have access to this analysis",
             }
         )
     
@@ -290,7 +359,8 @@ async def get_analysis(
 )
 async def get_analysis_detail(
     analysis_id: str = Path(..., description="Analysis ID"),
-    db: DatabaseClient = Depends(get_db)
+    db: DatabaseClient = Depends(get_db),
+    user: dict = Depends(get_current_user)
 ):
     """Get detailed analysis results with all modality data."""
     analysis = await db.get_analysis(analysis_id)
@@ -420,7 +490,8 @@ async def list_analyses(
     ),
     limit: int = Query(default=20, ge=1, le=100, description="Maximum results"),
     offset: int = Query(default=0, ge=0, description="Skip count for pagination"),
-    db: DatabaseClient = Depends(get_db)
+    db: DatabaseClient = Depends(get_db),
+    user: dict = Depends(get_current_user)
 ):
     """List analyses with optional status filter."""
     analyses = await db.list_analyses(
@@ -455,7 +526,9 @@ async def health_check(
     description="Get list of available detection models and their status.",
     tags=["system"]
 )
-async def list_models():
+async def list_models(
+    user: Optional[dict] = Depends(get_current_user_optional)
+):
     """List available detection models."""
     from models.registry import get_model_registry
     from models.manager import get_model_manager
@@ -502,7 +575,8 @@ async def list_models():
     tags=["system"]
 )
 async def get_stats(
-    db: DatabaseClient = Depends(get_db)
+    db: DatabaseClient = Depends(get_db),
+    user: dict = Depends(get_current_user)
 ):
     """Get analysis statistics using efficient count queries."""
     stats = {
@@ -535,7 +609,8 @@ async def get_report(
     analysis_id: str = Path(..., description="Analysis ID"),
     regenerate: bool = Query(default=False, description="Force regenerate report"),
     db: DatabaseClient = Depends(get_db),
-    storage: StorageClient = Depends(get_storage)
+    storage: StorageClient = Depends(get_storage),
+    user: dict = Depends(get_current_user)
 ):
     """Get or generate PDF forensic report."""
     analysis = await db.get_analysis(analysis_id)
@@ -552,28 +627,44 @@ async def get_report(
             detail={"error_code": "ANALYSIS_NOT_COMPLETE", "message": "Analysis must be complete to generate report"}
         )
     
-    # Check if report exists
+    # Check if report exists and not regenerating
     if analysis.report_url and not regenerate:
         return {"report_url": analysis.report_url}
     
-    # Generate report (placeholder - actual implementation in forensics module)
+    # Generate report on-demand using forensics module
     report_key = f"results/{analysis_id}/report.pdf"
     
     try:
-        # Generate presigned URL for download
+        from forensics.report import ReportGenerator
+        report_generator = ReportGenerator()
+        pdf_content = await report_generator.generate(analysis)
+        
+        # Upload to storage
+        await storage.ensure_default_buckets()
+        await storage.upload_file(
+            file=pdf_content,
+            bucket=storage.bucket_results,
+            object_key=report_key,
+            content_type="application/pdf"
+        )
+        
+        # Get presigned URL
         report_url = await storage.get_presigned_url(
             storage.bucket_results,
             report_key,
-            expires_seconds=3600
+            expires_seconds=86400  # 24 hours
         )
+        
+        # Update analysis record with report URL
+        await db.update_analysis(analysis_id, {"report_url": report_url})
         
         return {"report_url": report_url}
         
     except Exception as e:
-        logger.warning(f"Report not available: {e}")
+        logger.warning(f"Report generation failed: {e}")
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error_code": "REPORT_NOT_FOUND", "message": "Report has not been generated yet"}
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error_code": "REPORT_GENERATION_FAILED", "message": f"Failed to generate report: {e}"}
         )
 
 
@@ -589,7 +680,8 @@ async def get_report(
 async def get_heatmaps(
     analysis_id: str = Path(..., description="Analysis ID"),
     db: DatabaseClient = Depends(get_db),
-    storage: StorageClient = Depends(get_storage)
+    storage: StorageClient = Depends(get_storage),
+    user: dict = Depends(get_current_user)
 ):
     """Get GradCAM heatmap URLs for visualization."""
     analysis = await db.get_analysis(analysis_id)
@@ -637,7 +729,8 @@ async def get_heatmaps(
 async def get_xai_explanations(
     analysis_id: str = Path(..., description="Analysis ID"),
     db: DatabaseClient = Depends(get_db),
-    storage: StorageClient = Depends(get_storage)
+    storage: StorageClient = Depends(get_storage),
+    user: dict = Depends(get_current_user)
 ):
     """Get XAI explanations, feature importance, and evidence package."""
     analysis = await db.get_analysis(analysis_id)
@@ -657,7 +750,6 @@ async def get_xai_explanations(
         "image_xai": None,
         "video_xai": None,
         "audio_xai": None,
-        "text_xai": None,
         "evidence_package": evidence_pkg.model_dump() if evidence_pkg else None,
     }
 
@@ -710,20 +802,6 @@ async def get_xai_explanations(
             "spectrogram_overlay_url": aud.spectrogram_url,
         }
 
-    # Populate text XAI
-    if analysis.text_result:
-        txt = analysis.text_result
-        xai_response["text_xai"] = {
-            "explanation": {
-                "summary": summary_text,
-                "confidence_rationale": confidence_rationale,
-                "methodology_used": methodology,
-            },
-            "token_attributions": [
-                ta.model_dump() for ta in (txt.token_attributions or [])
-            ],
-        }
-
     return xai_response
 
 
@@ -739,7 +817,8 @@ async def get_xai_explanations(
 async def get_xai_heatmaps(
     analysis_id: str = Path(..., description="Analysis ID"),
     db: DatabaseClient = Depends(get_db),
-    storage: StorageClient = Depends(get_storage)
+    storage: StorageClient = Depends(get_storage),
+    user: dict = Depends(get_current_user)
 ):
     """Get XAI heatmap overlay URLs from the evidence package."""
     analysis = await db.get_analysis(analysis_id)
@@ -771,6 +850,190 @@ async def get_xai_heatmaps(
         })
 
     return {"heatmaps": heatmaps, "count": len(heatmaps)}
+
+
+# ===========================================================
+# Iteration 4: Continuous Learning Endpoints
+# ===========================================================
+
+# C4 fix: Pydantic schema for feedback (prevents training-data poisoning)
+class FeedbackRequest(BaseModel):
+    """Validated feedback request body."""
+    modality: Literal["image", "audio", "video"]
+    input_hash: str = Field(..., min_length=8, max_length=128)
+    label: int = Field(..., ge=0, le=1)
+    predicted_score: float = Field(0.5, ge=0.0, le=1.0)
+    confidence: float = Field(0.5, ge=0.0, le=1.0)
+    model_version: str = Field("unknown", max_length=64)
+    source: str = Field("user", max_length=32)
+    notes: str = Field("", max_length=2000)
+
+@router.post(
+    "/feedback",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Submit labeled feedback for continuous learning",
+    description=(
+        "Submit a labeled sample (modality + input_hash + label) to the "
+        "feedback buffer. The retrain scheduler will periodically retrain "
+        "LoRA adapters from accumulated feedback. See CHANGELOG.md."
+    ),
+)
+async def submit_feedback(
+    body: FeedbackRequest,
+    user: dict = Depends(get_current_user),
+    _rl: None = Depends(check_rate_limit),  # M7 fix: rate limit
+):
+    """Submit labeled feedback for continuous learning."""
+    try:
+        from continuous_learning import (
+            get_default_feedback_buffer, FeedbackSample,
+        )
+        from config import config
+
+        if not getattr(config, "enable_continuous_learning", False):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error_code": "CONTINUOUS_LEARNING_DISABLED",
+                    "message": "Continuous learning is disabled. Set ENABLE_CONTINUOUS_LEARNING=true to enable.",
+                },
+            )
+
+        import time as _time
+        sample = FeedbackSample(
+            timestamp=_time.time(),
+            modality=body.modality,
+            input_hash=body.input_hash,
+            label=body.label,
+            predicted_score=body.predicted_score,
+            confidence=body.confidence,
+            model_version=body.model_version,
+            source=body.source,
+            notes=body.notes,
+        )
+
+        buffer = get_default_feedback_buffer()
+        appended = buffer.append(sample)
+
+        # A/B test: record feedback for the candidate (if any)
+        try:
+            from continuous_learning.ab_test import get_default_ab_router
+            _ab = get_default_ab_router()
+            _ab.record_feedback(
+                modality=sample.modality,
+                score=sample.predicted_score,
+                label=sample.label,
+                is_candidate=False,
+            )
+        except Exception:
+            pass
+
+        return {
+            "status": "accepted" if appended else "duplicate_or_full",
+            "modality": sample.modality,
+            "buffer_count": buffer.count(modality=sample.modality),
+        }
+    except KeyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error_code": "MISSING_FIELD", "message": f"Missing required field: {e}"},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error_code": "FEEDBACK_FAILED", "message": str(e)},
+        )
+
+
+@router.get(
+    "/feedback/stats",
+    summary="Get feedback buffer statistics",
+    description="Returns the number of feedback samples per modality.",
+)
+async def get_feedback_stats(
+    user: dict = Depends(get_current_user),
+    _rl: None = Depends(check_rate_limit),  # M7 fix: rate limit
+):
+    """Get feedback buffer statistics."""
+    try:
+        from continuous_learning import get_default_feedback_buffer
+        buffer = get_default_feedback_buffer()
+        return {
+            "total": buffer.count(),
+            "by_modality": {
+                m: buffer.count(modality=m) for m in ["image", "audio", "video"]
+            },
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error_code": "STATS_FAILED", "message": str(e)},
+        )
+
+
+@router.post(
+    "/retrain/{modality}",
+    summary="Trigger LoRA adapter retraining for a modality",
+    description=(
+        "Manually trigger a retrain cycle for the specified modality. "
+        "Returns immediately with the retrain result. In production, "
+        "this is scheduled automatically by Celery Beat."
+    ),
+)
+async def trigger_retrain(
+    modality: str = Path(..., description="Modality: image | audio | video"),
+    user: dict = Depends(get_current_user),
+):
+    """Trigger LoRA adapter retraining. Requires admin role."""
+    # H2 fix: require admin role to prevent DoS via retrain spam
+    _is_admin = "admin" in (user.get("roles", []) if user else [])
+    if not _is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error_code": "INSUFFICIENT_ROLE",
+                "message": "Admin role required to trigger retraining",
+            }
+        )
+    if modality not in ["image", "audio", "video"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error_code": "INVALID_MODALITY", "message": f"Invalid modality: {modality}"},
+        )
+    try:
+        from continuous_learning import schedule_retrain_task
+        result = schedule_retrain_task(modality)
+        return result
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error_code": "RETRAIN_FAILED", "message": str(e)},
+        )
+
+
+@router.get(
+    "/ab_test/{modality}",
+    summary="Get A/B test status for a modality",
+    description="Returns the current A/B test metrics for the candidate adapter.",
+)
+async def get_ab_test_status(
+    modality: str = Path(..., description="Modality: image | audio | video"),
+    user: dict = Depends(get_current_user),
+    _rl: None = Depends(check_rate_limit),  # M7 fix: rate limit
+):
+    """Get A/B test status."""
+    try:
+        from continuous_learning import get_default_ab_router
+        router_ = get_default_ab_router()
+        evaluation = router_.evaluate_candidate(modality)
+        return {"modality": modality, "evaluation": evaluation}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error_code": "AB_TEST_FAILED", "message": str(e)},
+        )
 
 
 # Export router

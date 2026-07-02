@@ -1,259 +1,191 @@
-/**
- * Argus Core - File Card Component
- * =================================
- * Display selected file with preview, metadata, and remove action.
- * 
- * Implements: PRIME_FRONTEND_DOCUMENT.md - Section 2.2 - components/upload/FileCard.tsx
- * 
- * Role: Show file preview card after selection. Display thumbnail, filename,
- * size, type, and provide remove button.
- * 
- * Integration:
- * - Imports: lib/utils, lib/formatters
- * - Used by: UploadZone.tsx, AnalysisForm.tsx
- * - Store: uploadStore for file state
- * 
- * Component Contract (P0):
- * - Props interface defined
- * - Loading state: Shows skeleton during preview generation
- * - Error state: Shows error icon if preview fails
- * - Accessibility: Keyboard accessible remove button
- * - data-testid: file-card, file-card-remove, file-card-preview
- */
-
 'use client';
 
-import { useMemo } from 'react';
-import { X, FileVideo, FileAudio, Image as ImageIcon, FileText, AlertCircle } from 'lucide-react';
-import { cn, formatFileSize, getMimeCategory } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
+import { Film, Music, ImageIcon, X, CheckCircle2, AlertCircle, Upload } from 'lucide-react';
+import { cn, formatFileSize } from '@/lib/utils';
 import type { FileInfo } from '@/types/analysis';
 
-// ============== TYPES ==============
-
-export interface FileCardProps {
-  /** File object */
+interface FileCardProps {
   file: File;
-  /** Preview URL (blob URL for images/videos) */
   preview: string | null;
-  /** Callback when remove button is clicked */
   onRemove: () => void;
-  /** Upload progress (0-100), shows progress bar if defined */
-  uploadProgress?: number;
-  /** Error message to display */
-  error?: string;
-  /** Additional file info from validation */
   fileInfo?: FileInfo | null;
-  /** Disable interactions */
+  uploadProgress?: number;
+  error?: string;
   disabled?: boolean;
-  /** Additional CSS classes */
   className?: string;
 }
 
-// ============== HELPER COMPONENTS ==============
-
-/**
- * Get appropriate icon for file type
- */
-function FileTypeIcon({ mimeType, className }: { mimeType: string; className?: string }) {
-  const category = getMimeCategory(mimeType);
-  
-  switch (category) {
-    case 'video':
-      return <FileVideo className={cn('text-blue-500', className)} />;
-    case 'audio':
-      return <FileAudio className={cn('text-purple-500', className)} />;
-    case 'image':
-      return <ImageIcon className={cn('text-green-500', className)} />;
-    case 'text':
-      return <FileText className={cn('text-orange-500', className)} />;
-    default:
-      return <FileText className={cn('text-gray-500', className)} />;
-  }
+function getFileCategory(type: string): string {
+  if (type.startsWith('video/')) return 'video';
+  if (type.startsWith('audio/')) return 'audio';
+  if (type.startsWith('image/')) return 'image';
+  return 'unknown';
 }
 
-// ============== COMPONENT ==============
+function getExtension(name: string): string {
+  const ext = name.split('.').pop()?.toUpperCase() ?? '';
+  return ext.slice(0, 4);
+}
 
 export function FileCard({
   file,
   preview,
   onRemove,
+  fileInfo,
   uploadProgress,
   error,
-  fileInfo,
   disabled = false,
   className,
 }: FileCardProps) {
-  // Derive file info
-  const category = useMemo(() => getMimeCategory(file.type), [file.type]);
-  const formattedSize = useMemo(() => formatFileSize(file.size), [file.size]);
+  const displayType = fileInfo?.type || file.type;
+  const displayName = fileInfo?.name || file.name;
+  const displaySize = fileInfo?.size ?? file.size;
+  const displayExt = fileInfo?.extension || getExtension(file.name);
+  const category = getFileCategory(displayType);
+  const CategoryIcon = category === 'video' ? Film : category === 'audio' ? Music : category === 'image' ? ImageIcon : Upload;
+  const ext = displayExt.slice(0, 4).toUpperCase();
   const isUploading = uploadProgress !== undefined && uploadProgress < 100;
   const isComplete = uploadProgress === 100;
-
-  // Get display extension
-  const extension = useMemo(() => {
-    const ext = file.name.split('.').pop()?.toUpperCase() || '';
-    return ext.length <= 4 ? ext : ext.substring(0, 4);
-  }, [file.name]);
+  const filename = displayName;
 
   return (
     <div
       data-testid="file-card"
       className={cn(
-        'relative flex items-start gap-4 p-4 rounded-lg border bg-card',
-        'transition-all duration-200',
-        error && 'border-destructive bg-destructive/5',
+        'relative flex items-center gap-3 rounded-lg border p-3 transition-all duration-200',
+        error ? 'border-destructive' : 'border-border',
         isComplete && !error && 'border-green-500/50 bg-green-500/5',
-        !error && !isComplete && 'border-border',
         disabled && 'opacity-60 pointer-events-none',
         className
       )}
     >
-      {/* Preview/Thumbnail */}
-      <div 
+      {/* Preview */}
+      <div
         data-testid="file-card-preview"
-        className={cn(
-          'relative flex-shrink-0 w-20 h-20 rounded-lg overflow-hidden',
-          'bg-muted flex items-center justify-center'
-        )}
+        className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-md bg-muted overflow-hidden"
       >
-        {preview && (category === 'image' || category === 'video') ? (
-          <>
-            {category === 'image' ? (
-              // Image preview
-              <img
-                src={preview}
-                alt={`Preview of ${file.name}`}
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              // Video preview (shows first frame)
-              <video
-                src={preview}
-                className="w-full h-full object-cover"
-                muted
-                playsInline
-                data-testid="file-card-video-preview"
-              />
-            )}
-          </>
+        {preview && category === 'image' ? (
+          <img
+            src={preview}
+            alt={`Preview of ${displayName}`}
+            className="h-full w-full object-cover"
+          />
+        ) : preview && category === 'video' ? (
+          <video
+            src={preview}
+            muted
+            className="h-full w-full object-cover"
+          />
         ) : (
-          // Icon fallback for audio/unknown
-          <div className="flex flex-col items-center gap-1">
-            <FileTypeIcon mimeType={file.type} className="h-8 w-8" />
-            <span className="text-[10px] font-medium text-muted-foreground uppercase">
-              {extension}
-            </span>
+          <div className="flex flex-col items-center gap-0.5">
+            <CategoryIcon className="h-5 w-5 text-muted-foreground" strokeWidth={1.5} />
+            <span className="text-[10px] font-medium text-muted-foreground leading-none">{category}</span>
           </div>
         )}
-
-        {/* Category badge */}
-        <div className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-black/60 text-white uppercase">
-          {category}
-        </div>
+        {/* Extension badge */}
+        {(!preview || category === 'audio') && (
+          <span className="absolute bottom-0.5 right-0.5 rounded bg-background/80 px-1 py-0.5 text-[9px] font-semibold text-foreground leading-none">
+            {ext}
+          </span>
+        )}
       </div>
 
-      {/* File info */}
-      <div className="flex-1 min-w-0 space-y-2">
-        {/* Filename */}
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <h4 
-              className="font-medium text-sm truncate text-foreground"
-              title={file.name}
-            >
-              {file.name}
-            </h4>
-            <p className="text-xs text-muted-foreground">
-              {formattedSize} • {file.type || 'Unknown type'}
-            </p>
-          </div>
-
-          {/* Remove button */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 flex-shrink-0 text-muted-foreground hover:text-foreground"
-            onClick={onRemove}
-            disabled={disabled || isUploading}
-            data-testid="file-card-remove"
-            aria-label={`Remove ${file.name}`}
-          >
-            <X className="h-4 w-4" />
-          </Button>
+      {/* Info */}
+      <div className="flex-1 min-w-0 space-y-1">
+        <p
+          className="text-sm font-medium truncate"
+          title={filename}
+        >
+          {filename}
+        </p>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>{displayType}</span>
+          <span className="text-border">|</span>
+          <span>{formatFileSize(displaySize)}</span>
         </div>
 
         {/* Upload progress */}
         {uploadProgress !== undefined && (
           <div className="space-y-1">
-            <Progress 
-              value={uploadProgress} 
-              className="h-1.5"
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">
+                {isComplete ? 'Upload complete' : `Uploading... ${Math.round(uploadProgress)}%`}
+              </span>
+              {isComplete && !error && (
+                <span className="flex items-center gap-1 text-green-600 font-medium">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Ready for analysis
+                </span>
+              )}
+            </div>
+            <div
+              role="progressbar"
               aria-label="Upload progress"
-            />
-            <p className="text-xs text-muted-foreground">
-              {isComplete ? 'Upload complete' : `Uploading... ${uploadProgress}%`}
-            </p>
+              aria-valuenow={Math.round(uploadProgress)}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              className="h-1.5 w-full rounded-full bg-muted overflow-hidden"
+            >
+              <div
+                className={cn(
+                  'h-full rounded-full transition-all duration-300',
+                  error ? 'bg-destructive' : 'bg-primary'
+                )}
+                style={{ width: `${uploadProgress}%` }}
+              />
+            </div>
           </div>
         )}
 
-        {/* Error message */}
+        {/* Error */}
         {error && (
-          <div 
-            className="flex items-center gap-1.5 text-xs text-destructive"
+          <div
             role="alert"
+            className="flex items-center gap-1 text-xs text-destructive"
           >
-            <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
+            <AlertCircle className="h-3 w-3" />
             <span>{error}</span>
           </div>
         )}
-
-        {/* Success indicator (when complete without error) */}
-        {isComplete && !error && (
-          <div className="flex items-center gap-1.5 text-xs text-green-600 dark:text-green-500">
-            <svg 
-              className="h-3.5 w-3.5 flex-shrink-0" 
-              viewBox="0 0 20 20" 
-              fill="currentColor"
-            >
-              <path 
-                fillRule="evenodd" 
-                d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" 
-                clipRule="evenodd" 
-              />
-            </svg>
-            <span>Ready for analysis</span>
-          </div>
-        )}
       </div>
+
+      {/* Remove */}
+      <button
+        type="button"
+        data-testid="file-card-remove"
+        aria-label={`Remove ${filename}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (!disabled && !isUploading) onRemove();
+        }}
+        disabled={disabled || isUploading}
+        className={cn(
+          'flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors',
+          'text-muted-foreground hover:bg-muted hover:text-foreground',
+          'disabled:pointer-events-none disabled:opacity-50',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+        )}
+      >
+        <X className="h-4 w-4" strokeWidth={1.5} />
+      </button>
     </div>
   );
 }
 
-// ============== SKELETON ==============
-
-/**
- * Loading skeleton for FileCard
- */
 export function FileCardSkeleton({ className }: { className?: string }) {
   return (
     <div
       className={cn(
-        'flex items-start gap-4 p-4 rounded-lg border bg-card',
-        'animate-pulse',
+        'flex items-center gap-3 rounded-lg border border-border p-3 animate-pulse',
         className
       )}
     >
-      {/* Preview skeleton */}
-      <div className="flex-shrink-0 w-20 h-20 rounded-lg bg-muted" />
-      
-      {/* Content skeleton */}
+      <div className="h-14 w-14 shrink-0 rounded-md bg-muted" />
       <div className="flex-1 space-y-2">
-        <div className="h-4 w-3/4 bg-muted rounded" />
-        <div className="h-3 w-1/2 bg-muted rounded" />
-        <div className="h-1.5 w-full bg-muted rounded" />
+        <div className="h-4 w-40 rounded bg-muted" />
+        <div className="h-3 w-24 rounded bg-muted" />
       </div>
+      <div className="h-7 w-7 rounded-md bg-muted" />
     </div>
   );
 }

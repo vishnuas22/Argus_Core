@@ -201,12 +201,12 @@ export function ModalityTabs({
   const getScoreForTab = (tabId: ModalityTabType): number | undefined => {
     switch (tabId) {
       case 'video':
-        return videoResult?.aggregated_score !== undefined
-          ? videoResult.aggregated_score * 100
+        return videoResult?.aggregate_score !== undefined
+          ? videoResult.aggregate_score * 100
           : undefined;
       case 'audio':
-        return audioResult?.score !== undefined
-          ? audioResult.score * 100
+        return audioResult?.synthetic_probability !== undefined
+          ? audioResult.synthetic_probability * 100
           : undefined;
       case 'metadata':
         return metadataResult?.score !== undefined

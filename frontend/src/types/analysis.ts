@@ -64,7 +64,6 @@ export interface ScoreBreakdown {
   video_temporal?: number;
   video_lipsync?: number;
   audio?: number;
-  text?: number;
   metadata?: number;
   weights: Record<string, number>;
 }
@@ -132,50 +131,90 @@ export interface FrameResult {
 
 /**
  * Spatial analysis result (per-frame)
+ * Matches backend SpatialResult from schemas/schemas.py
  */
 export interface SpatialResult {
   score: number;
-  confidence: number;
+  per_frame_scores: number[];
+  anomaly_indices: number[];
+  heatmap_urls: string[];
+  dct_anomaly_score: number;
+  gan_fingerprint_detected: boolean;
+  manipulation_regions: ManipulationRegion[];
+  efficientnet_score: number | null;
+  clip_score: number | null;
+  /** Model used for detection (display field) */
   model_used: string;
-  frames_analyzed: number;
+  /** Confidence in detection result (display field) */
+  confidence: number;
+  /** Anomalous frames with details (display field) */
   anomaly_frames: FrameResult[];
+  /** Number of frames analyzed (display field) */
+  frames_analyzed: number;
+  /** Average face detection confidence (display field) */
   average_face_confidence: number;
 }
 
 /**
  * Temporal analysis result (consistency)
+ * Matches backend TemporalResult from schemas/schemas.py
  */
 export interface TemporalResult {
-  score: number;
-  confidence: number;
-  model_used: string;
-  flickering_detected: boolean;
   consistency_score: number;
+  flickering_detected: boolean;
+  anomaly_timestamps: number[];
+  motion_anomaly_score: number;
+  landmark_jitter_score: number;
+  xclip_score: number | null;
+  /** Aggregate detection score (display field) */
+  score: number;
+  /** Model used for detection (display field) */
+  model_used: string;
+  /** Confidence in detection result (display field) */
+  confidence: number;
+  /** Number of motion artifacts detected (display field) */
   motion_artifacts: number;
 }
 
 /**
  * Lip-sync analysis result
+ * Matches backend LipSyncResult from schemas/schemas.py
  */
 export interface LipsyncResult {
+  sync_score: number;
+  manipulation_probability: number;
+  detected_technology: string | null;
+  lip_region_heatmap_url: string | null;
+  audio_visual_offset_ms: number | null;
+  confidence_interval?: [number, number] | null;
+  /** Aggregate detection score (display field) */
   score: number;
-  confidence: number;
+  /** Model used for detection (display field) */
   model_used: string;
+  /** Confidence in detection result (display field) */
+  confidence: number;
+  /** Audio-visual sync offset in ms (display field) */
   sync_offset_ms: number;
+  /** Number of phoneme mismatches (display field) */
   phoneme_mismatches: number;
 }
 
 /**
  * Combined video analysis result
+ * Matches backend VideoResult from schemas/schemas.py
  */
 export interface VideoResult {
-  aggregated_score: number;
-  confidence: number;
   spatial: SpatialResult;
   temporal: TemporalResult;
-  lipsync?: LipsyncResult;
-  frames_processed: number;
-  duration_analyzed_seconds: number;
+  lip_sync?: LipsyncResult | null;
+  aggregate_score: number;
+  frames_analyzed: number;
+  face_detected: boolean;
+  frame_heatmap_urls: string[];
+  temporal_heatmap_url?: string | null;
+  confidence_interval?: Record<string, number> | null;
+  /** Display confidence score (display field) */
+  confidence: number;
 }
 
 // ============== AUDIO RESULTS ==============
@@ -195,9 +234,6 @@ export interface AudioSegment {
  * Matches backend AudioResult from schemas/schemas.py
  */
 export interface AudioResult {
-  score: number;
-  confidence: number;
-  model_used: string;
   /** Probability audio is synthetic (0-1) */
   synthetic_probability: number;
   /** Whether vocoder artifacts detected */
@@ -206,6 +242,16 @@ export interface AudioResult {
   voice_consistency_score: number;
   /** URL to mel-spectrogram visualization */
   spectrogram_url?: string;
+  /** Frequency domain anomaly score */
+  frequency_anomaly_score?: number;
+  /** AASIST anti-spoofing model score */
+  aasist_score?: number | null;
+  /** Model used for detection (display field) */
+  model_used: string;
+  /** Confidence in detection result (display field) */
+  confidence: number;
+  /** Aggregate detection score (display field) */
+  score: number;
 }
 
 // ============== IMAGE RESULTS ==============
@@ -461,26 +507,6 @@ export interface AudioArtifactRegion {
 }
 
 /**
- * Token attribution for text XAI
- * Shows which tokens contribute to AI detection
- */
-export interface TokenAttribution {
-  token: string;           // The token/word
-  attribution_score: number;  // Contribution to AI detection (-1 to 1)
-  position: number;        // Token position in text
-  is_ai_indicator: boolean;   // Whether this token indicates AI generation
-}
-
-/**
- * Perplexity breakdown by text segment
- */
-export interface PerplexityBreakdown {
-  segment: string;         // Text segment
-  perplexity: number;      // Perplexity score
-  is_anomalous: boolean;   // Whether segment is anomalous
-}
-
-/**
  * Feature importance for model decision
  */
 export interface FeatureImportance {
@@ -517,7 +543,7 @@ export interface ScientificReference {
  * Visual evidence for reports
  */
 export interface VisualEvidence {
-  artifact_type: 'heatmap' | 'spectrogram' | 'frequency_plot' | 'overlay' | 'temporal_chart' | 'token_highlight' | 'attention_map';
+  artifact_type: 'heatmap' | 'spectrogram' | 'frequency_plot' | 'overlay' | 'temporal_chart' | 'attention_map';
   url: string;             // MinIO presigned URL
   description: string;     // Human-readable description
   frame_index?: number;    // For video frames
@@ -552,8 +578,6 @@ export interface EvidencePackage {
   confidence_interval: [number, number];
   model_versions: Record<string, string>;
   // Additional fields from backend
-  token_attributions?: TokenAttribution[] | null;
-  perplexity_breakdown?: PerplexityBreakdown[] | null;
   audio_artifact_regions?: AudioArtifactRegion[] | null;
   analysis_timestamp?: string;
   integrity_hash?: string;
@@ -572,32 +596,26 @@ export interface AudioResultXAI extends AudioResult {
 
 /**
  * Extended SpatialResult with XAI fields
+ * Base SpatialResult now includes all backend fields; XAI subtype adds
+ * human-readable explanation metadata.
  */
 export interface SpatialResultXAI extends SpatialResult {
-  dct_anomaly_score: number;
-  gan_fingerprint_detected: boolean;
-  manipulation_regions: ManipulationRegion[];
-  efficientnet_score: number;
-  clip_score: number;
   xai_explanation?: XAIExplanation;
 }
 
 /**
  * Extended TemporalResult with XAI fields
+ * Base TemporalResult now includes all backend fields.
  */
 export interface TemporalResultXAI extends TemporalResult {
-  motion_anomaly_score: number;
-  landmark_jitter_score: number;
-  xclip_score: number;
 }
 
 /**
  * Extended VideoResult with XAI fields
+ * Base VideoResult now includes all backend fields; XAI subtype only
+ * overrides sub-results to the XAI versions.
  */
 export interface VideoResultXAI extends VideoResult {
-  frame_heatmap_urls: string[];
-  temporal_heatmap_url?: string;
-  confidence_interval: [number, number];
   spatial: SpatialResultXAI;
   temporal: TemporalResultXAI;
   xai_explanation?: XAIExplanation;
@@ -633,14 +651,6 @@ export interface XAIHeatmapResponse {
     url: string;
     artifact_regions: AudioArtifactRegion[];
   };
-  token_highlights?: Array<{
-    text: string;
-    highlights: Array<{
-      start: number;
-      end: number;
-      score: number;
-    }>;
-  }>;
   count: number;
 }
 
@@ -651,9 +661,36 @@ export interface XAIHeatmapResponse {
 export interface ModalityXAI {
   explanation: XAIExplanation | null;
   artifactRegions: AudioArtifactRegion[] | ManipulationRegion[];
-  tokenAttributions?: TokenAttribution[];
   heatmapUrls: string[];
   overlayUrl: string | null;
+}
+
+/**
+ * Iteration 4/5: XAI attribution data from the backend ModalityResult.
+ * Used by the XAIAttributionPanel component.
+ */
+export interface XAIAttributionData {
+  method: string;          // "eigen_cam" | "attn_lrp" | etc.
+  heatmap: number[][];     // 2D array in [0, 1]
+  heatmap_shape: [number, number];
+  explanation: string;
+  verdict: string;         // "real" | "fake"
+  score: number;
+}
+
+/**
+ * Iteration 4/5: Extended ModalityResult with XAI + conformal fields.
+ * Additive — all fields are optional for backward compatibility.
+ */
+export interface ExtendedModalityResult {
+  modality: string;
+  score: number;
+  confidence: number;
+  details?: Record<string, unknown>;
+  // Iteration 4 additive fields
+  xai_attribution?: XAIAttributionData | null;
+  conformal_prediction_set?: number[] | null;
+  route_to_human?: boolean;
 }
 
 // ============== EXPORTS ==============

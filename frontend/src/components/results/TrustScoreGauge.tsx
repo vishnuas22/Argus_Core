@@ -113,6 +113,7 @@ export function TrustScoreGauge({
 
   const svgRef = useRef<SVGSVGElement>(null);
   const gaugeRef = useRef<GaugeInstance | null>(null);
+  const frameRef = useRef<number | null>(null);
   const [displayScore, setDisplayScore] = useState(clampedScore);
   const [isInitialized, setIsInitialized] = useState(false);
 
@@ -159,16 +160,20 @@ export function TrustScoreGauge({
         setDisplayScore(Math.round(clampedScore * eased));
         
         if (progress < 1) {
-          requestAnimationFrame(animate);
+          frameRef.current = requestAnimationFrame(animate);
         }
       };
-      requestAnimationFrame(animate);
+      frameRef.current = requestAnimationFrame(animate);
     } else {
       // For non-animated mode (e.g., tests), set immediately
       setDisplayScore(clampedScore);
     }
 
     return () => {
+      if (frameRef.current !== null) {
+        cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+      }
       gaugeRef.current?.destroy();
       gaugeRef.current = null;
     };
@@ -179,6 +184,12 @@ export function TrustScoreGauge({
     if (!isInitialized || !gaugeRef.current) return;
 
     gaugeRef.current.update(clampedScore, verdict);
+
+    // Cancel any in-progress animation
+    if (frameRef.current !== null) {
+      cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+    }
 
     // Animate display score update
     if (animated) {
@@ -191,13 +202,20 @@ export function TrustScoreGauge({
         setDisplayScore(Math.round(currentDisplay + (clampedScore - currentDisplay) * eased));
         
         if (progress < 1) {
-          requestAnimationFrame(animate);
+          frameRef.current = requestAnimationFrame(animate);
         }
       };
-      requestAnimationFrame(animate);
+      frameRef.current = requestAnimationFrame(animate);
     } else {
       setDisplayScore(clampedScore);
     }
+
+    return () => {
+      if (frameRef.current !== null) {
+        cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+      }
+    };
   }, [clampedScore, verdict, isInitialized, animated]);
 
   // Calculate confidence ring dimensions

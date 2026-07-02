@@ -17,7 +17,7 @@ class IAnalyzer(ABC):
     """
     Abstract base class for all analyzers.
     
-    All modality analyzers (video, audio, image, text, metadata) must 
+    All modality analyzers (video, audio, image, metadata) must 
     implement this interface to ensure consistent behavior across
     the analysis pipeline.
     

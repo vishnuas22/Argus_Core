@@ -171,13 +171,13 @@ export function VideoAnalysisPanel({
     }
 
     // Lipsync score (if available)
-    if (result.lipsync) {
+    if (result.lip_sync) {
       indicators.push({
         label: 'Lip-Sync',
-        value: result.lipsync.score,
+        value: result.lip_sync.score,
         icon: Mic2,
         description: 'Audio-visual sync analysis',
-        status: getScoreStatus(result.lipsync.score),
+        status: getScoreStatus(result.lip_sync.score),
       });
     }
 
@@ -227,9 +227,9 @@ export function VideoAnalysisPanel({
       )}
 
       {/* Lip-Sync Analysis Section (if available) */}
-      {result.lipsync && (
+      {result.lip_sync && (
         <LipsyncAnalysisSection
-          lipsync={result.lipsync}
+          lipsync={result.lip_sync}
           compact={compact}
         />
       )}
@@ -260,7 +260,7 @@ function VideoSummarySection({
   indicators: ScoreIndicator[];
   compact: boolean;
 }) {
-  const overallStatus = getScoreStatus(result.aggregated_score);
+  const overallStatus = getScoreStatus(result.aggregate_score);
 
   return (
     <Card data-testid="video-summary-section">
@@ -273,12 +273,12 @@ function VideoSummarySection({
             </CardTitle>
           </div>
           <Badge className={cn('font-mono', STATUS_COLORS[overallStatus])}>
-            {(result.aggregated_score * 100).toFixed(1)}%
+            {(result.aggregate_score * 100).toFixed(1)}%
           </Badge>
         </div>
         {!compact && (
           <CardDescription>
-            Analyzed {result.frames_processed} frames over {result.duration_analyzed_seconds.toFixed(1)}s
+            Analyzed {result.frames_analyzed} frames
           </CardDescription>
         )}
       </CardHeader>

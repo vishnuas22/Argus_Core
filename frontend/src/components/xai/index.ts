@@ -30,6 +30,9 @@ export { ScientificReferences, ScientificReferencesSkeleton } from './Scientific
 // Evidence gallery
 export { XAIEvidenceGallery, XAIEvidenceGallerySkeleton } from './XAIEvidenceGallery';
 
+// Iteration 5: XAI attribution panel (Eigen-CAM heatmap + conformal badge)
+export { XAIAttributionPanel } from './XAIAttributionPanel';
+
 // Types
 export type { FeatureImportanceTableProps } from './FeatureImportanceTable';
 export type { ConfidenceIntervalProps } from './ConfidenceInterval';

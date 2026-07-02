@@ -38,14 +38,6 @@ export interface SubmitAnalysisInput {
 }
 
 /**
- * Input for text analysis mutation
- */
-export interface SubmitTextAnalysisInput {
-  text: string;
-  generateReport?: boolean;
-}
-
-/**
  * Default analysis options
  */
 export const DEFAULT_ANALYSIS_OPTIONS: AnalysisOptions = {
@@ -60,8 +52,6 @@ export const DEFAULT_ANALYSIS_OPTIONS: AnalysisOptions = {
 export interface UseAnalysisReturn {
   /** Mutation for submitting media analysis */
   submitAnalysis: UseMutationResult<AnalysisResponse, Error, SubmitAnalysisInput>;
-  /** Mutation for submitting text analysis */
-  submitTextAnalysis: UseMutationResult<AnalysisResponse, Error, SubmitTextAnalysisInput>;
   /** Mutation for deleting analysis */
   deleteAnalysis: UseMutationResult<void, Error, string>;
   /** Helper to check if any mutation is pending */
@@ -149,36 +139,6 @@ export function useAnalysis(): UseAnalysisReturn {
     },
   });
 
-  // ============== SUBMIT TEXT ANALYSIS MUTATION ==============
-
-  const submitTextAnalysis = useMutation<AnalysisResponse, Error, SubmitTextAnalysisInput>({
-    mutationFn: async ({ text, generateReport = false }) => {
-      return analysisApi.submitTextAnalysis(text, generateReport);
-    },
-    
-    onMutate: () => {
-      setStatus('uploading');
-      setError(null);
-    },
-    
-    onSuccess: (data) => {
-      setAnalysisId(data.analysis_id);
-      setStatus('complete');
-      
-      // Invalidate analysis list cache
-      queryClient.invalidateQueries({ queryKey: analysisKeys.lists() });
-      
-      // Navigate to analysis page
-      router.push(`/analysis/${data.analysis_id}`);
-    },
-    
-    onError: (error) => {
-      const message = getErrorMessage(error);
-      setError(message);
-      setStatus('error');
-    },
-  });
-
   // ============== DELETE ANALYSIS MUTATION ==============
 
   const deleteAnalysis = useMutation<void, Error, string>({
@@ -201,12 +161,11 @@ export function useAnalysis(): UseAnalysisReturn {
 
   // ============== COMPUTED STATE ==============
 
-  const isSubmitting = submitAnalysis.isPending || submitTextAnalysis.isPending;
+  const isSubmitting = submitAnalysis.isPending;
   const isDeleting = deleteAnalysis.isPending;
 
   return {
     submitAnalysis,
-    submitTextAnalysis,
     deleteAnalysis,
     isSubmitting,
     isDeleting,

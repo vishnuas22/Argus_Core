@@ -28,7 +28,7 @@ const GUIDES = [
 ];
 
 export default function AnalyzePage() {
-  const { file } = useUploadStore();
+  const { file, setFile } = useUploadStore();
 
   const handleSubmitSuccess = useCallback((analysisId: string) => {
     window.location.href = `/analysis/${analysisId}`;
@@ -37,6 +37,10 @@ export default function AnalyzePage() {
   const handleSubmitError = useCallback((error: Error) => {
     console.error('Submission failed:', error);
   }, []);
+
+  const handleFileSelect = useCallback((selectedFile: File) => {
+    setFile(selectedFile);
+  }, [setFile]);
 
   return (
     <div className="min-h-screen flex flex-col" data-testid="analyze-page">
@@ -90,7 +94,7 @@ export default function AnalyzePage() {
               </div>
               <div className="p-6">
                 <UploadZone
-                  onFileSelect={() => {}}
+                  onFileSelect={handleFileSelect}
                   className="border-2 border-dashed border-border hover:border-primary/30 transition-all duration-300 rounded-lg bg-background/50"
                 />
                 {file && (

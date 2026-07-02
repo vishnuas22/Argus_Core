@@ -21,7 +21,6 @@ import type {
   VisualEvidence,
   ScientificReference,
   AudioArtifactRegion,
-  TokenAttribution,
   ManipulationRegion,
 } from '@/types/analysis';
 
@@ -35,7 +34,7 @@ export type XAIStatus = 'idle' | 'loading' | 'success' | 'error';
 /**
  * Modality type for XAI data
  */
-export type ModalityType = 'image' | 'video' | 'audio' | 'text';
+export type ModalityType = 'image' | 'video' | 'audio';
 
 /**
  * XAI data for a specific modality
@@ -43,7 +42,6 @@ export type ModalityType = 'image' | 'video' | 'audio' | 'text';
 export interface ModalityXAI {
   explanation: XAIExplanation | null;
   artifactRegions: AudioArtifactRegion[] | ManipulationRegion[];
-  tokenAttributions?: TokenAttribution[];
   heatmapUrls: string[];
   overlayUrl: string | null;
 }
@@ -63,7 +61,6 @@ interface XAIState {
   imageXAI: ModalityXAI | null;
   videoXAI: ModalityXAI | null;
   audioXAI: ModalityXAI | null;
-  textXAI: ModalityXAI | null;
   
   // Active modality for display
   activeModality: ModalityType;
@@ -92,7 +89,6 @@ interface XAIActions {
   setImageXAI: (data: ModalityXAI | null) => void;
   setVideoXAI: (data: ModalityXAI | null) => void;
   setAudioXAI: (data: ModalityXAI | null) => void;
-  setTextXAI: (data: ModalityXAI | null) => void;
   
   // Set evidence package
   setEvidencePackage: (pkg: XAIState['evidencePackage']) => void;
@@ -114,7 +110,6 @@ interface XAIActions {
 const initialModalityXAI: ModalityXAI = {
   explanation: null,
   artifactRegions: [],
-  tokenAttributions: [],
   heatmapUrls: [],
   overlayUrl: null,
 };
@@ -126,7 +121,6 @@ const initialState: XAIState = {
   imageXAI: null,
   videoXAI: null,
   audioXAI: null,
-  textXAI: null,
   activeModality: 'image',
   evidencePackage: null,
   lastFetched: null,
@@ -163,7 +157,6 @@ export const useXAIStore = create<XAIState & XAIActions>()(
                 imageXAI: null,
                 videoXAI: null,
                 audioXAI: null,
-                textXAI: null,
                 evidencePackage: null,
                 lastFetched: null,
               },
@@ -219,21 +212,6 @@ export const useXAIStore = create<XAIState & XAIActions>()(
             },
             false,
             'setAudioXAI'
-          );
-        },
-
-        /**
-         * Set XAI data for text modality
-         */
-        setTextXAI: (data) => {
-          set(
-            {
-              textXAI: data,
-              status: 'success',
-              lastFetched: Date.now(),
-            },
-            false,
-            'setTextXAI'
           );
         },
 
@@ -302,9 +280,6 @@ export const useXAIStore = create<XAIState & XAIActions>()(
               break;
             case 'audio':
               updates.audioXAI = null;
-              break;
-            case 'text':
-              updates.textXAI = null;
               break;
           }
           
@@ -380,14 +355,6 @@ export const selectAudioXAI = (state: XAIState & XAIActions) => ({
 });
 
 /**
- * Selector for text XAI data
- */
-export const selectTextXAI = (state: XAIState & XAIActions) => ({
-  textXAI: state.textXAI,
-  setTextXAI: state.setTextXAI,
-});
-
-/**
  * Selector for evidence package
  */
 export const selectEvidencePackage = (state: XAIState & XAIActions) => ({
@@ -406,8 +373,6 @@ export const selectActiveModalityXAI = (state: XAIState) => {
       return state.videoXAI;
     case 'audio':
       return state.audioXAI;
-    case 'text':
-      return state.textXAI;
     default:
       return null;
   }
@@ -420,7 +385,6 @@ export const selectHasXAI = (state: XAIState) =>
   state.imageXAI !== null ||
   state.videoXAI !== null ||
   state.audioXAI !== null ||
-  state.textXAI !== null ||
   state.evidencePackage !== null;
 
 /**
@@ -450,9 +414,6 @@ export const selectAllFeatureImportance = (state: XAIState): FeatureImportance[]
   if (state.audioXAI?.explanation?.feature_importance) {
     allFeatures.push(...state.audioXAI.explanation.feature_importance);
   }
-  if (state.textXAI?.explanation?.feature_importance) {
-    allFeatures.push(...state.textXAI.explanation.feature_importance);
-  }
   
   return allFeatures;
 };
@@ -471,9 +432,6 @@ export const selectAllVisualEvidence = (state: XAIState): VisualEvidence[] => {
   }
   if (state.audioXAI?.explanation?.visual_evidence) {
     allEvidence.push(...state.audioXAI.explanation.visual_evidence);
-  }
-  if (state.textXAI?.explanation?.visual_evidence) {
-    allEvidence.push(...state.textXAI.explanation.visual_evidence);
   }
   
   return allEvidence;
@@ -498,7 +456,6 @@ export const selectScientificReferences = (state: XAIState): ScientificReference
   addReferences(state.imageXAI);
   addReferences(state.videoXAI);
   addReferences(state.audioXAI);
-  addReferences(state.textXAI);
   
   return Array.from(referencesMap.values());
 };

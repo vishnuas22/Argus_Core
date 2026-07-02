@@ -93,9 +93,74 @@ else:
     echo ""
     echo "Downloading Feature Extraction models..."
     python -m models.model_downloader --model clip_vit_b16 --models-dir ${MODEL_PATH:-/models} || true
-    
+
+    # ===========================================================
+    # Iteration 1: Pull SOTA detector snapshots from manifest
+    # ===========================================================
+    # Each snapshot is pinned to a specific HF revision (see
+    # models/manifest.yaml) and verified against sha256 if
+    # VERIFY_MODEL_CHECKSUMS=true. Failures are non-fatal — the
+    # corresponding detector will soft-fail at runtime and the
+    # DiversityEnsemble will downweight it automatically.
+    if [ "${ENABLE_SOTA_DETECTORS:-true}" = "true" ]; then
+        echo ""
+        echo "=========================================="
+        echo "Pulling SOTA detector snapshots (manifest-pinned)..."
+        echo "=========================================="
+        python -c "
+import asyncio, os, sys
+sys.path.insert(0, '/app')
+from models.downloader import pull_all_sota_snapshots
+
+async def main():
+    results = await pull_all_sota_snapshots()
+    if not results:
+        print('  - No SOTA models pulled (manifest empty or unreachable)')
+        return
+    for key, path in results.items():
+        if path:
+            size = sum(
+                os.path.getsize(os.path.join(root, f))
+                for root, _, files in os.walk(path)
+                for f in files
+            ) / 1024 / 1024
+            print(f'  + {key}: {path} ({size:.1f}MB)')
+        else:
+            print(f'  - {key}: FAILED (non-fatal; detector will soft-fail)')
+
+asyncio.run(main())
+" || echo "  - SOTA snapshot pull step encountered errors (non-fatal)"
+    fi
+
     echo ""
     echo "Model download step completed"
+fi
+
+# ===========================================================
+# Iteration 2: Load calibration artifacts (if present)
+# ===========================================================
+# Calibration artifacts are fitted offline by scripts/fit_calibration.py
+# and placed under /models/calibration/. The post-processing pipeline
+# loads them lazily on first inference; this step just logs availability.
+if [ "${ENABLE_CALIBRATION:-true}" = "true" ]; then
+    echo ""
+    echo "=========================================="
+    echo "Checking calibration artifacts..."
+    echo "=========================================="
+    CAL_DIR="${MODEL_PATH:-/models}/calibration"
+    if [ -d "$CAL_DIR" ]; then
+        for f in temperature_scaler.json conformal_raps.json platt_params.json drift_reference.json; do
+            if [ -f "$CAL_DIR/$f" ]; then
+                SIZE=$(stat -c%s "$CAL_DIR/$f" 2>/dev/null || stat -f%z "$CAL_DIR/$f" 2>/dev/null || echo "?")
+                echo "  + $f (${SIZE} bytes)"
+            else
+                echo "  - $f (not found — run scripts/fit_calibration.py to fit)"
+            fi
+        done
+    else
+        echo "  - Calibration directory $CAL_DIR does not exist."
+        echo "    Run scripts/fit_calibration.py to fit calibration artifacts."
+    fi
 fi
 
 # List available models with sizes

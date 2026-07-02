@@ -14,9 +14,9 @@ Pipeline:
 """
 
 from typing import Optional, Dict, Any
-import asyncio
 import io as io_module
 import numpy as np
+from PIL import Image
 
 from config import config
 from schemas import (
@@ -29,7 +29,7 @@ from storage.storage import StorageClient
 from storage.db import DatabaseClient
 from processing.sanitize import InputSanitizer, SanitizedFile, FileType
 from processing.extract import MediaExtractor, VideoData, AudioData
-from utils.errors import PreprocessingError
+from utils.errors import PreprocessingError, ValidationError
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -179,7 +179,7 @@ class Preprocessor:
         video_data: VideoData = await self.extractor.extract_video_data(
             file_bytes,
             frame_sample_rate=options.get("frame_sample_rate"),
-            max_frames=options.get("max_frames", 100),
+            max_frames=options.get("max_frames", 16),  # Reduced from 100 for CPU performance
             extract_audio=True
         )
         
@@ -194,60 +194,42 @@ class Preprocessor:
         audio_key = None
         
         if self.storage:
-            # Upload frames as proper .npy files
+            # Parallelize uploads — frame/face/mouth uploads are independent
+            async def _upload_npy(data: np.ndarray, key: str) -> str:
+                buffer = io_module.BytesIO()
+                np.save(buffer, data)
+                buffer.seek(0)
+                await self.storage.upload_file(
+                    buffer.read(),
+                    config.minio_bucket_preprocessed,
+                    key,
+                    "application/octet-stream"
+                )
+                return key
+
+            # Build upload tasks for all frames, faces, mouths
+            upload_tasks = []
             for i, frame in enumerate(video_data.frames):
-                key = f"{analysis_id}/frames/frame_{i:06d}.npy"
-                buffer = io_module.BytesIO()
-                np.save(buffer, frame)
-                buffer.seek(0)
-                await self.storage.upload_file(
-                    buffer.read(),
-                    config.minio_bucket_preprocessed,
-                    key,
-                    "application/octet-stream"
-                )
-                frame_keys.append(key)
-            
-            # Upload face crops as proper .npy files
+                upload_tasks.append(_upload_npy(frame, f"{analysis_id}/frames/frame_{i:06d}.npy"))
             for i, crop in enumerate(video_data.face_crops):
-                key = f"{analysis_id}/faces/face_{i:06d}.npy"
-                buffer = io_module.BytesIO()
-                np.save(buffer, crop)
-                buffer.seek(0)
-                await self.storage.upload_file(
-                    buffer.read(),
-                    config.minio_bucket_preprocessed,
-                    key,
-                    "application/octet-stream"
-                )
-                face_crop_keys.append(key)
-            
-            # Upload mouth crops (landmark-based, for precise lip-sync analysis)
+                upload_tasks.append(_upload_npy(crop, f"{analysis_id}/faces/face_{i:06d}.npy"))
             for i, crop in enumerate(video_data.mouth_crops):
-                key = f"{analysis_id}/mouths/mouth_{i:06d}.npy"
-                buffer = io_module.BytesIO()
-                np.save(buffer, crop)
-                buffer.seek(0)
-                await self.storage.upload_file(
-                    buffer.read(),
-                    config.minio_bucket_preprocessed,
-                    key,
-                    "application/octet-stream"
-                )
-                mouth_crop_keys.append(key)
-            
-            # Upload audio if present as proper .npy file
+                upload_tasks.append(_upload_npy(crop, f"{analysis_id}/mouths/mouth_{i:06d}.npy"))
+
+            results = await asyncio.gather(*upload_tasks, return_exceptions=True)
+
+            # Collect successful keys by type
+            n_frames = len(video_data.frames)
+            n_faces = len(video_data.face_crops)
+            n_mouths = len(video_data.mouth_crops)
+            frame_keys = [r for r in results[:n_frames] if isinstance(r, str)]
+            face_crop_keys = [r for r in results[n_frames:n_frames+n_faces] if isinstance(r, str)]
+            mouth_crop_keys = [r for r in results[n_frames+n_faces:n_frames+n_faces+n_mouths] if isinstance(r, str)]
+
+            # Upload audio separately (only one, no benefit from parallelism)
             if video_data.audio is not None:
                 audio_key = f"{analysis_id}/audio/track.npy"
-                buffer = io_module.BytesIO()
-                np.save(buffer, video_data.audio)
-                buffer.seek(0)
-                await self.storage.upload_file(
-                    buffer.read(),
-                    config.minio_bucket_preprocessed,
-                    audio_key,
-                    "application/octet-stream"
-                )
+                await _upload_npy(video_data.audio, audio_key)
         
         return PreprocessedData(
             analysis_id=analysis_id,
@@ -319,13 +301,24 @@ class Preprocessor:
         Detects faces and prepares for analysis.
         """
         logger.info(f"Processing image for analysis {analysis_id}")
-        
-        import numpy as np
-        from PIL import Image
-        import io
-        
-        # Load image
-        img = Image.open(io.BytesIO(file_bytes))
+
+        # M3 fix: enforce MAX_IMAGE_PIXELS to prevent decompression bombs.
+        # A 100MB PNG can decompress into a multi-GB array, OOM-killing
+        # the worker. PIL warns above MAX_IMAGE_PIXELS (default ~89M)
+        # but does not refuse. We set a hard limit and catch the error.
+        Image.MAX_IMAGE_PIXELS = 25_000_000  # 25 megapixels max
+
+        # Load image with decompression bomb protection
+        try:
+            img = Image.open(io_module.BytesIO(file_bytes))
+            img.verify()  # detect malformed files without full decode
+            img = Image.open(io_module.BytesIO(file_bytes))  # reopen after verify
+            img.load()  # force full decode (triggers DecompressionBombError)
+        except Image.DecompressionBombError:
+            raise ValidationError(
+                "Image exceeds maximum dimensions (25 megapixels). "
+                "Possible decompression bomb attack."
+            )
         img_array = np.array(img.convert("RGB"))
         
         # Detect faces

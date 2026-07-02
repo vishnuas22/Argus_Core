@@ -27,6 +27,7 @@ class Wav2Vec2AudioDetector(BaseDetector):
         self._target_sample_rate = target_sample_rate
         self._processor = None
         self._classifier = None
+        self._backend_used = None
 
     def get_required_models(self) -> List[str]:
         return ["wav2vec2_base"]
@@ -57,11 +58,26 @@ class Wav2Vec2AudioDetector(BaseDetector):
                 attention_mask = attention_mask.to(self._device)
 
             with torch.no_grad():
-                outputs = self._model(input_values, attention_mask=attention_mask)
-                hidden = outputs.last_hidden_state
+                outputs = self._model(
+                    input_values,
+                    attention_mask=attention_mask,
+                    output_hidden_states=True,
+                )
 
-                pooled = hidden.mean(dim=1)
-                logits = self._classifier(pooled)
+                if hasattr(outputs, 'logits') and outputs.logits is not None:
+                    logits = outputs.logits
+                    pooled = outputs.logits.mean(dim=1) if outputs.logits.dim() > 1 else outputs.logits
+                elif hasattr(outputs, 'last_hidden_state'):
+                    hidden = outputs.last_hidden_state
+                    pooled = hidden.mean(dim=1)
+                    logits = self._classifier(pooled)
+                elif hasattr(outputs, 'hidden_states') and outputs.hidden_states is not None:
+                    hidden = outputs.hidden_states[-1]
+                    pooled = hidden.mean(dim=1)
+                    logits = self._classifier(pooled)
+                else:
+                    raise AttributeError("No usable output found from Wav2Vec2 model")
+
                 probs = torch.softmax(logits, dim=-1)
 
             spoof_prob = float(probs[0, 1].cpu()) if probs.shape[-1] >= 2 else float(probs[0, 0].cpu())
