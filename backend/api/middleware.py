@@ -641,6 +641,53 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class DrainingMiddleware(BaseHTTPMiddleware):
+    """
+    Reject new requests during graceful shutdown.
+
+    When the app is draining (set by the lifespan shutdown handler),
+    this middleware returns 503 Service Unavailable with a Retry-After
+    header. This lets the reverse proxy (nginx) route traffic to
+    another instance while we finish in-flight requests.
+
+    Health checks are always allowed so the load balancer can see the
+    draining state and stop sending traffic.
+    """
+
+    # Paths that bypass the draining check (so the LB can still probe
+    # health and see the 503 status to stop sending traffic).
+    BYPASS_PATHS = ("/api/v1/health", "/health", "/metrics")
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
+        # Allow health/metrics through so the LB can see draining state.
+        if any(request.url.path.startswith(p) for p in self.BYPASS_PATHS):
+            return await call_next(request)
+
+        # Check draining flag (set by lifespan shutdown handler).
+        draining = getattr(request.app.state, "draining", False)
+        if draining:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={
+                    "error_code": "SERVICE_DRAINING",
+                    "message": (
+                        "Server is shutting down. Please retry on a "
+                        "different instance in 30 seconds."
+                    ),
+                },
+                headers={
+                    "Retry-After": "30",
+                    "Connection": "close",
+                },
+            )
+
+        return await call_next(request)
+
+
 # ============== MIDDLEWARE FACTORY ==============
 
 def setup_middleware(app) -> None:
@@ -649,12 +696,13 @@ def setup_middleware(app) -> None:
     
     Middleware order matters:
     1. Error handling (outermost - catches all errors)
-    2. Security headers
-    3. Request logging
-    4. Request ID
-    5. CORS
-    6. Rate limiting
-    7. Authentication
+    2. Draining check (reject new requests during shutdown)
+    3. Security headers
+    4. Request logging
+    5. Request ID
+    6. CORS
+    7. Rate limiting
+    8. Authentication
     
     Args:
         app: FastAPI application instance
@@ -681,10 +729,13 @@ def setup_middleware(app) -> None:
     # Security headers
     app.add_middleware(SecurityHeadersMiddleware)
     
+    # Draining check — reject new requests during graceful shutdown
+    app.add_middleware(DrainingMiddleware)
+    
     # Error handling (outermost - catches all errors)
     app.add_middleware(ErrorHandlingMiddleware)
     
-    logger.info("Middleware stack configured")
+    logger.info("Middleware stack configured (includes DrainingMiddleware)")
 
 
 # Export middleware classes

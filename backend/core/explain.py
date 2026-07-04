@@ -419,25 +419,75 @@ class ExplainabilityEngine:
         self,
         aggregated: AggregatedResult
     ) -> ManipulationType:
-        """Detect primary manipulation type from results."""
-        # Analyze modality results to determine manipulation type
+        """
+        Detect the primary manipulation type from modality results.
+
+        Iterates through ALL modality results (not just the first), scores
+        each candidate manipulation type by the strength of evidence
+        (modality score × confidence), and returns the strongest one.
+        Falls back to UNKNOWN if no modality presents actionable evidence.
+
+        Previous implementation returned FACE_SWAP as soon as a VIDEO
+        modality was encountered, even if AUDIO had a higher spoof score.
+        This was a logic bug (engineering review MQ-9) — the loop never
+        reached AUDIO or IMAGE results when VIDEO was first in the list.
+        """
+        # Score each candidate manipulation type by evidence strength.
+        # `evidence` = modality.score × modality.confidence  (both in [0,1])
+        # so a confident, high-scoring modality wins over a noisy one.
+        candidates: List[Tuple[float, ManipulationType]] = []
+
         for result in aggregated.modality_results:
             if result.modality == Modality.VIDEO:
-                details = result.details
+                details = result.details or {}
+                # Specific video manipulation flags take precedence when present
                 if details.get("lip_sync_detected"):
-                    return ManipulationType.LIP_SYNC
+                    # Lip-sync anomaly is a strong, specific signal — boost it
+                    candidates.append((
+                        result.score * result.confidence * 1.2,
+                        ManipulationType.LIP_SYNC,
+                    ))
                 if details.get("temporal_inconsistency"):
-                    return ManipulationType.TEMPORAL_INCONSISTENCY
-                return ManipulationType.FACE_SWAP
-            
+                    candidates.append((
+                        result.score * result.confidence * 1.1,
+                        ManipulationType.TEMPORAL_INCONSISTENCY,
+                    ))
+                # Generic face-swap fallback — only meaningful if score is high
+                if result.score > 0.5:
+                    candidates.append((
+                        result.score * result.confidence,
+                        ManipulationType.FACE_SWAP,
+                    ))
+
             elif result.modality == Modality.AUDIO:
-                if result.score > 0.7:
-                    return ManipulationType.AUDIO_CLONE
-            
+                # Only flag AUDIO_CLONE when the audio modality itself is
+                # confident the speech is synthetic; otherwise we risk
+                # mislabeling noisy / silent audio as a voice clone.
+                if result.score > 0.7 and result.confidence > 0.4:
+                    candidates.append((
+                        result.score * result.confidence,
+                        ManipulationType.AUDIO_CLONE,
+                    ))
+
             elif result.modality == Modality.IMAGE:
-                return ManipulationType.AI_GENERATED_IMAGE
-            
-        return ManipulationType.UNKNOWN
+                # Image modality only contributes AI_GENERATED_IMAGE when
+                # it is at least moderately suspicious — a clean image
+                # should not preempt an AUDIO_CLONE finding from a sibling
+                # modality.
+                if result.score > 0.5:
+                    candidates.append((
+                        result.score * result.confidence,
+                        ManipulationType.AI_GENERATED_IMAGE,
+                    ))
+
+        if not candidates:
+            return ManipulationType.UNKNOWN
+
+        # Return the manipulation type with the highest evidence score.
+        # Ties resolve to the first-inserted candidate (deterministic
+        # because we iterate modality_results in fixed order).
+        candidates.sort(key=lambda c: c[0], reverse=True)
+        return candidates[0][1]
     
     def _generate_modality_finding(
         self,

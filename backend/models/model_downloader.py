@@ -17,6 +17,8 @@ Usage:
     python -m models.model_downloader --modality audio
 """
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import os
@@ -38,6 +40,14 @@ try:
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
+    # Provide a stub so type annotations like `Dict[str, torch.Tensor]`
+    # do not raise NameError at class-definition time on CPU-only hosts
+    # where PyTorch is intentionally not installed. The stub is never
+    # used at runtime because all torch-dependent code paths are gated
+    # behind `if TORCH_AVAILABLE:` checks.
+    import types as _types
+    torch = _types.SimpleNamespace()  # type: ignore[assignment]
+    nn = _types.SimpleNamespace()      # type: ignore[assignment]
     print("Warning: PyTorch not available. Some features will be limited.")
 
 try:

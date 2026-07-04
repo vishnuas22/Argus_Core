@@ -115,6 +115,48 @@ async def analyze_media(
         }
     )
     
+    # Per-user rate limit (in addition to the IP-based limiter in middleware).
+    # Prevents a single authenticated user from monopolizing the pipeline.
+    # Anonymous users fall through to the IP-based limiter only.
+    if user is not None:
+        user_id = str(user.get("user_id", user.get("sub", "")))
+        user_tier = str(user.get("tier", "free"))
+        try:
+            from api.user_rate_limit import check_user_rate_limit
+            allowed, retry_after, limit = await check_user_rate_limit(
+                user_id, tier=user_tier,
+            )
+            if not allowed:
+                logger.warning(
+                    "Per-user rate limit exceeded for user=%s tier=%s "
+                    "(limit=%d/hour)", user_id, user_tier, limit,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail={
+                        "error_code": "USER_RATE_LIMIT_EXCEEDED",
+                        "message": (
+                            f"Analysis limit reached: {limit} per hour for "
+                            f"tier '{user_tier}'. Retry in {retry_after}s."
+                        ),
+                        "details": {
+                            "limit": limit,
+                            "tier": user_tier,
+                            "retry_after_seconds": retry_after,
+                        },
+                    },
+                    headers={"Retry-After": str(retry_after)},
+                )
+        except HTTPException:
+            raise
+        except Exception as rl_err:
+            # Rate-limit check failure must NOT block the request —
+            # log and continue (the IP limiter still protects us).
+            logger.warning(
+                "Per-user rate limit check failed (allowing request): %s",
+                rl_err,
+            )
+    
     try:
         # M2 fix: stream file to memory with size cap to prevent OOM.
         # Previously: file_content = await file.read() loaded the entire
@@ -925,8 +967,20 @@ async def submit_feedback(
                 label=sample.label,
                 is_candidate=False,
             )
-        except Exception:
-            pass
+        except ImportError as _fb_e:
+            logger.debug(
+                "continuous_learning.ab_test unavailable — feedback A/B "
+                "tracking disabled. Reason: %s", _fb_e,
+            )
+        except Exception as _fb_e:
+            # Feedback A/B tracking must not break the feedback submission,
+            # but silent swallowing hides real bugs. Log at WARNING so ops
+            # can see when the A/B router is misbehaving.
+            logger.warning(
+                "A/B feedback recording failed for modality %s: %s: %s",
+                sample.modality, type(_fb_e).__name__, _fb_e,
+                exc_info=False,
+            )
 
         return {
             "status": "accepted" if appended else "duplicate_or_full",

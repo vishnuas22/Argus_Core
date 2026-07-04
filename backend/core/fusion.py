@@ -28,10 +28,27 @@ Reference: Sensoy et al., "Evidential Deep Learning to Quantify
 Classification Uncertainty", NeurIPS 2018.
 """
 
+from __future__ import annotations
+
 import numpy as np
-import torch
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
 from dataclasses import dataclass
+
+# Torch is only required for the neural UMFT fusion path (``fuse_raw``).
+# The default ``aggregate`` path is pure numpy + Python, so we make
+# torch an optional import. This lets the evidential fusion run on
+# CPU-only hosts where torch is intentionally not installed (the
+# single-modality and Dirichlet paths still work).
+try:
+    import torch  # type: ignore[import]
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
+    torch = None  # type: ignore[assignment]
+
+if TYPE_CHECKING:
+    # For type-checkers only — never evaluated at runtime.
+    import torch  # noqa: F401
 
 from config import config
 from schemas.schemas import (
@@ -337,11 +354,11 @@ class MultiModalFusion:
 
     def fuse_raw(
         self,
-        frames: Optional[torch.Tensor] = None,
-        waveform: Optional[torch.Tensor] = None,
-        input_ids: Optional[torch.Tensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[float, Dict[str, float], torch.Tensor]:
+        frames: "Optional[torch.Tensor]" = None,
+        waveform: "Optional[torch.Tensor]" = None,
+        input_ids: "Optional[torch.Tensor]" = None,
+        attention_mask: "Optional[torch.Tensor]" = None,
+    ) -> Tuple[float, Dict[str, float], "torch.Tensor"]:
         """
         Full neural forward pass with raw tensor inputs.
 
@@ -356,8 +373,21 @@ class MultiModalFusion:
 
         Returns:
             Tuple of (fake_probability, attention_weights_dict, fused_features)
+
+        Raises:
+            ImportError: if torch is not installed. ``fuse_raw`` is the
+                only path that requires torch; the default ``aggregate``
+                path is pure-numpy and always available.
         """
-        import torch
+        if not _TORCH_AVAILABLE:
+            raise ImportError(
+                "fuse_raw() requires PyTorch, which is not installed in "
+                "this environment. Use the default aggregate() path "
+                "(pure-numpy evidential Dirichlet fusion) instead, or "
+                "install torch to enable UMFT cross-attention fusion."
+            )
+        # Re-import here (now safe) so the function body has access.
+        import torch  # noqa: F811
 
         engine = self.cross_attention_engine
         with torch.no_grad():

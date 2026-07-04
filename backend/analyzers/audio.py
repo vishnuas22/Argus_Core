@@ -177,7 +177,12 @@ class AudioAnalysisDetails:
     sample_rate: int = DEFAULT_SAMPLE_RATE
     segments_analyzed: int = 0
     primary_detector: str = "wav2vec2_antispoof"  # Which detector was used as primary
-    
+    # True iff at least one neural detector produced a non-default (non-0.5)
+    # score. When False, downstream fusion should treat the audio modality
+    # as low-confidence because no real ML inference contributed to the
+    # result. Set by AudioAnalyzer.analyze after all detector calls return.
+    any_neural_available: bool = True
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for ModalityResult details."""
         return {
@@ -195,7 +200,8 @@ class AudioAnalysisDetails:
             "audio_duration_seconds": round(self.audio_duration_seconds, 2),
             "sample_rate": self.sample_rate,
             "segments_analyzed": self.segments_analyzed,
-            "primary_detector": self.primary_detector
+            "primary_detector": self.primary_detector,
+            "any_neural_available": self.any_neural_available,
         }
 
 
@@ -496,6 +502,13 @@ class AudioAnalyzer(BaseAnalyzer):
                 wav2vec2_score
             ] if s is not None
         )
+        # Persist the neural-availability flag on `details` so downstream
+        # confidence computation and the orchestrator's fusion step can
+        # detect when no real ML inference contributed to the score.
+        # The user's protocol explicitly requires that heuristic-only
+        # results be marked as low-confidence so they cannot dominate
+        # the final verdict.
+        details.any_neural_available = any_neural_available
         synthetic_probability = self._compute_aggregate_score(
             wav2vec2_antispoof_score=wav2vec2_antispoof_score,
             vocoder_artifacts=vocoder_artifacts,
@@ -1272,38 +1285,65 @@ class AudioAnalyzer(BaseAnalyzer):
     def _compute_confidence(self, details: AudioAnalysisDetails) -> float:
         """
         Compute confidence based on analysis details.
-        
+
+        Confidence reflects how much weight the fusion layer should give
+        this modality. It is bounded to [0.15, 0.95] — never 1.0 because
+        every detector has a non-zero false-positive rate, and never 0
+        because even a heuristic-only result still carries weak signal.
+
+        IMPORTANT: when ``details.any_neural_available`` is False (i.e.
+        every neural detector returned its default 0.5 score — typically
+        because the model files failed to load or all inferences raised),
+        we cap confidence at 0.15 so the orchestrator's evidential fusion
+        contributes near-zero evidence from this modality. This honors
+        the user's protocol: "Never replace inference with heuristic
+        estimates because GPU resources are unavailable" — we still
+        produce a score for telemetry, but we will not let it dominate
+        the final verdict.
+
         Args:
             details: Analysis details
-            
+
         Returns:
-            Confidence score [0, 1]
+            Confidence score [0.15, 0.95]
         """
+        # If no neural detector produced a real score, return a low
+        # confidence immediately. The aggregate score is dampened to
+        # ~0.5 by `_compute_aggregate_score`, and a low confidence here
+        # ensures the evidential fusion in core/fusion.py contributes
+        # negligible evidence for this modality.
+        if not getattr(details, "any_neural_available", True):
+            logger.warning(
+                "Audio confidence capped at 0.15 — no neural detector "
+                "produced a real score (heuristic-only path)."
+            )
+            return 0.15
+
         # Base confidence from duration
         duration_factor = min(1.0, details.audio_duration_seconds / 10.0)
-        
+
         # Segments factor
         segments_factor = min(1.0, details.segments_analyzed / 5.0)
-        
+
         # Score extremity factor - use primary detector score
         if details.primary_detector == "wav2vec2_antispoof":
             score = details.wav2vec2_antispoof_score
         else:
             score = 0.5
         extremity_factor = abs(score - 0.5) * 2
-        
+
         # Primary detector bonus (Wav2Vec2 XLSR antispoofing is most reliable)
         detector_bonus = 0.1 if details.primary_detector == "wav2vec2_antispoof" else 0.0
-        
+
         confidence = (
             0.4 * duration_factor +
             0.3 * segments_factor +
             0.2 * extremity_factor +
             detector_bonus
         )
-        
+
         return float(np.clip(confidence, 0.3, 0.95))
-    
+
     def _segment_audio(self, audio: np.ndarray) -> List[np.ndarray]:
         """
         Segment audio for analysis.

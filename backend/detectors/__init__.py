@@ -5,25 +5,21 @@ Pluggable deepfake detector adapters. Each detector subclasses
 ``BaseDetector`` and returns ``DetectionResult``. Detectors are combined
 per-modality by ``detectors.ensemble.DiversityEnsemble``.
 
-Iteration-1 additions (SOTA detector adapters):
-- CLIPLoRAImageDetector        — CLIP ViT-B/16 + LoRA (ForAda CVPR 2025 style)
-- DINOv2ImageDetector          — DINOv2-base + MAC head (DINO-MAC NTIRE 2026)
-- AASIST3AudioDetector         — AASIST3 end-to-end anti-spoofing (ASVspoof 2024)
-- Wav2Vec2XLSRMoELoRADetector  — Wav2Vec2-XLS-R-300M + MoE-LoRA (arxiv 2025)
-- VideoMAEDetector             — VideoMAE-base (NeurIPS 2022)
-- AltFreeVideoDetector         — AltFree (CVPR 2024)
+Curated 2026-07-02 (see MODEL_AUDIT.md):
+  Removed dead/unusable detectors:
+    - AltFreeVideoDetector   (no canonical HF port — fake stub fallback)
+    - CDPMambaDetector       (no public weights — placeholder source)
 
-Iteration-3 additions (ensemble diversity expansion):
-- SigLIPImageDetector          — SigLIP-base (ICCV 2023) — 3rd image detector
+  Kept (all backed by real, public model sources):
+    Image:  CLIPLoRAImageDetector, DINOv2ImageDetector, SigLIPImageDetector,
+            SBIDetector, UCFCrossForgeryDetector
+    Audio:  AASIST3AudioDetector, Wav2Vec2XLSRMoELoRADetector,
+            ECAPATDNNAudioDetector, Wav2Vec2AudioDetector (legacy)
+    Video:  VideoMAEDetector, TimeSformerVideoDetector (license-gated)
 
-Iteration-4 additions (further ensemble diversity):
-- TimeSformerVideoDetector     — TimeSformer-base (ICML 2021) — 3rd video detector
-  NOTE: cc-by-nc-4.0 license (non-commercial). Disable for commercial use.
-- ECAPATDNNAudioDetector       — ECAPA-TDNN (INTERSPEECH 2020) — 3rd audio detector
-  Embedding-distance-based; MIT license; commercially usable.
-
-All new detectors are strict-additive — the existing Wav2Vec2AudioDetector
-and the existing ONNX-based analyzers continue to work unchanged.
+All detectors are lazy-loaded — the import block below only imports the
+class definitions, NOT the model weights. Model weights are loaded on
+first inference call via ModelManager.get_model().
 """
 
 import logging
@@ -33,7 +29,7 @@ logger = logging.getLogger(__name__)
 from detectors.base import BaseDetector, DetectionResult, DetectorBackend
 from detectors.wav2vec2_detector import Wav2Vec2AudioDetector
 
-# Iteration-1 SOTA adapters
+# ============== IMAGE DETECTORS (5) ==============
 try:
     from detectors.clip_image_detector import CLIPLoRAImageDetector
 except Exception as e:
@@ -47,6 +43,25 @@ except Exception as e:
     logger.warning(f"DINOv2ImageDetector unavailable: {e}")
 
 try:
+    from detectors.siglip_image_detector import SigLIPImageDetector
+except Exception as e:
+    SigLIPImageDetector = None
+    logger.warning(f"SigLIPImageDetector unavailable: {e}")
+
+try:
+    from detectors.sbi_image_detector import SBIDetector
+except Exception as e:
+    SBIDetector = None
+    logger.warning(f"SBIDetector unavailable: {e}")
+
+try:
+    from detectors.ucf_cross_forgery_detector import UCFCrossForgeryDetector
+except Exception as e:
+    UCFCrossForgeryDetector = None
+    logger.warning(f"UCFCrossForgeryDetector unavailable: {e}")
+
+# ============== AUDIO DETECTORS (3) ==============
+try:
     from detectors.aasist3_audio_detector import AASIST3AudioDetector
 except Exception as e:
     AASIST3AudioDetector = None
@@ -59,57 +74,37 @@ except Exception as e:
     logger.warning(f"Wav2Vec2XLSRMoELoRADetector unavailable: {e}")
 
 try:
-    from detectors.videomae_detector import VideoMAEDetector
-except Exception as e:
-    VideoMAEDetector = None
-    logger.warning(f"VideoMAEDetector unavailable: {e}")
-
-try:
-    from detectors.altfree_video_detector import AltFreeVideoDetector
-except Exception as e:
-    AltFreeVideoDetector = None
-    logger.warning(f"AltFreeVideoDetector unavailable: {e}")
-
-# Iteration-3 SOTA adapters (ensemble diversity expansion)
-try:
-    from detectors.siglip_image_detector import SigLIPImageDetector
-except Exception as e:
-    SigLIPImageDetector = None
-    logger.warning(f"SigLIPImageDetector unavailable: {e}")
-
-# Iteration-4 SOTA adapters (further ensemble diversity)
-try:
-    from detectors.timesformer_detector import TimeSformerVideoDetector
-except Exception as e:
-    TimeSformerVideoDetector = None
-    logger.warning(f"TimeSformerVideoDetector unavailable: {e}")
-
-try:
     from detectors.ecapa_tdnn_audio_detector import ECAPATDNNAudioDetector
 except Exception as e:
     ECAPATDNNAudioDetector = None
     logger.warning(f"ECAPATDNNAudioDetector unavailable: {e}")
 
-# Iteration-5 SOTA adapters (SBI boundary-artifact detection)
+# ============== VIDEO DETECTORS (2) ==============
 try:
-    from detectors.sbi_image_detector import SBIDetector
+    from detectors.videomae_detector import VideoMAEDetector
 except Exception as e:
-    SBIDetector = None
-    logger.warning(f"SBIDetector unavailable: {e}")
+    VideoMAEDetector = None
+    logger.warning(f"VideoMAEDetector unavailable: {e}")
 
-# Iteration-6 SOTA adapters (cross-generator + state-space audio)
-try:
-    from detectors.ucf_cross_forgery_detector import UCFCrossForgeryDetector
-except Exception as e:
-    UCFCrossForgeryDetector = None
-    logger.warning(f"UCFCrossForgeryDetector unavailable: {e}")
+# TimeSformer is license-gated (CC-BY-NC-4.0 — non-commercial only).
+# Default disabled for commercial deployments. Enable via
+# ENABLE_TIMESFORMER=true in .env for research use.
+import os
+_ENABLE_TIMESFORMER = os.environ.get("ENABLE_TIMESFORMER", "false").lower() in ("true", "1", "yes")
+TimeSformerVideoDetector = None
+if _ENABLE_TIMESFORMER:
+    try:
+        from detectors.timesformer_detector import TimeSformerVideoDetector
+    except Exception as e:
+        TimeSformerVideoDetector = None
+        logger.warning(f"TimeSformerVideoDetector unavailable: {e}")
+else:
+    logger.info(
+        "TimeSformerVideoDetector disabled (CC-BY-NC-4.0 license). "
+        "Set ENABLE_TIMESFORMER=true for non-commercial research use."
+    )
 
-try:
-    from detectors.cdp_mamba_audio_detector import CDPMambaDetector
-except Exception as e:
-    CDPMambaDetector = None
-    logger.warning(f"CDPMambaDetector unavailable: {e}")
-
+# ============== Ensemble combiner ==============
 from detectors.ensemble import (
     DiversityEnsemble,
     EnsembleMember,
@@ -117,45 +112,41 @@ from detectors.ensemble import (
     get_default_ensemble,
 )
 
+
+# ============== Availability summary ==============
 _available_sota = [
     name for name, cls in [
         ("CLIPLoRA", CLIPLoRAImageDetector),
         ("DINOv2", DINOv2ImageDetector),
         ("SigLIP", SigLIPImageDetector),
+        ("SBI", SBIDetector),
+        ("UCF", UCFCrossForgeryDetector),
         ("AASIST3", AASIST3AudioDetector),
         ("XLS-R", Wav2Vec2XLSRMoELoRADetector),
         ("ECAPA-TDNN", ECAPATDNNAudioDetector),
-        ("SBI", SBIDetector),
-        ("UCF", UCFCrossForgeryDetector),
-        ("CDP-Mamba", CDPMambaDetector),
         ("VideoMAE", VideoMAEDetector),
-        ("AltFree", AltFreeVideoDetector),
         ("TimeSformer", TimeSformerVideoDetector),
     ] if cls is not None
 ]
-logger.info(f"SOTA detectors available: {', '.join(_available_sota) if _available_sota else 'none'}")
+logger.info(
+    f"SOTA detectors available ({len(_available_sota)}): "
+    f"{', '.join(_available_sota) if _available_sota else 'none'}"
+)
+
 
 __all__ = [
     # Base
     "BaseDetector", "DetectionResult", "DetectorBackend",
-    # Legacy
+    # Legacy audio
     "Wav2Vec2AudioDetector",
-    # Iteration-1 SOTA image
+    # Image detectors (5)
     "CLIPLoRAImageDetector", "DINOv2ImageDetector",
-    # Iteration-1 SOTA audio
+    "SigLIPImageDetector", "SBIDetector", "UCFCrossForgeryDetector",
+    # Audio detectors (3)
     "AASIST3AudioDetector", "Wav2Vec2XLSRMoELoRADetector",
-    # Iteration-1 SOTA video
-    "VideoMAEDetector", "AltFreeVideoDetector",
-    # Iteration-3 SOTA image (diversity)
-    "SigLIPImageDetector",
-    # Iteration-4 SOTA video + audio (further diversity)
-    "TimeSformerVideoDetector", "ECAPATDNNAudioDetector",
-    # Iteration-5 SOTA image (SBI boundary-artifact detection)
-    "SBIDetector",
-    # Iteration-6 SOTA image (cross-generator detection)
-    "UCFCrossForgeryDetector",
-    # Iteration-6 SOTA audio (state-space model)
-    "CDPMambaDetector",
+    "ECAPATDNNAudioDetector",
+    # Video detectors (2 — TimeSformer gated by license)
+    "VideoMAEDetector", "TimeSformerVideoDetector",
     # Ensemble
     "DiversityEnsemble", "EnsembleMember",
     "combine_detector_results", "get_default_ensemble",

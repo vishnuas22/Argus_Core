@@ -1,0 +1,69 @@
+# ============================================================
+# Argus Core — Alertmanager Configuration
+# ============================================================
+# Routes alerts from Prometheus to notification channels.
+# Configure your Slack/PagerDuty webhooks below.
+# ============================================================
+
+global:
+  resolve_timeout: 5m
+  # Slack webhook URL (set in .env or here directly)
+  slack_api_url: 'https://hooks.slack.com/services/CHANGE_ME'
+
+# Templates for alert messages
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+# Routing rules
+route:
+  receiver: 'default'
+  group_by: ['alertname', 'service']
+  group_wait: 30s      # Wait 30s before sending first notification (group batching)
+  group_interval: 5m   # Send updates every 5 min
+  repeat_interval: 4h  # Repeat unresolved alerts every 4h
+  routes:
+    # Critical alerts → Slack + PagerDuty immediately
+    - match:
+        severity: critical
+      receiver: 'critical'
+      group_wait: 0s
+      repeat_interval: 1h
+    # Warning alerts → Slack only
+    - match:
+        severity: warning
+      receiver: 'warnings'
+
+# Inhibition: if a critical alert is firing, suppress related warnings
+inhibit_rules:
+  - source_match:
+      severity: critical
+    target_match:
+      severity: warning
+    equal: ['service']
+
+# Receivers (notification channels)
+receivers:
+  - name: 'default'
+    slack_configs:
+      - channel: '#argus-alerts'
+        send_resolved: true
+        title: '{{ .CommonLabels.alertname }}'
+        text: '{{ .CommonAnnotations.summary }}'
+
+  - name: 'critical'
+    slack_configs:
+      - channel: '#argus-alerts'
+        send_resolved: true
+        title: '🚨 CRITICAL: {{ .CommonLabels.alertname }}'
+        text: '{{ .CommonAnnotations.summary }}\n{{ .CommonAnnotations.description }}'
+    # Uncomment and configure for PagerDuty
+    # webhooks:
+    #   - url: 'https://events.pagerduty.com/v2/enqueue'
+    #     send_resolved: true
+
+  - name: 'warnings'
+    slack_configs:
+      - channel: '#argus-alerts'
+        send_resolved: true
+        title: '⚠️ {{ .CommonLabels.alertname }}'
+        text: '{{ .CommonAnnotations.summary }}'

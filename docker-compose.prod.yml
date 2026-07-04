@@ -1,0 +1,412 @@
+# ============================================================
+# Argus Core — Production Docker Compose
+# ============================================================
+# This compose file is for PRODUCTION deployment only.
+# Differences from docker-compose.yml:
+#   1. Nginx reverse proxy with TLS termination (only exposed ports)
+#   2. Internal services NOT exposed to host (no ports: mapping)
+#   3. Stricter memory limits and restart policies
+#   4. Log rotation configured
+#   5. Read-only filesystems where possible
+#   6. No source code mounted (uses built images)
+#
+# Usage:
+#   1. Copy .env.example to .env and fill in real secrets
+#   2. Obtain TLS certs (see nginx/README.md)
+#   3. docker compose -f docker-compose.prod.yml up -d
+#
+# NEVER commit the real .env file.
+# ============================================================
+
+services:
+  # ============== REVERSE PROXY (TLS termination) ==============
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: argus-nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./nginx/auth:/etc/nginx/auth:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    networks:
+      - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ============== BACKEND ==============
+  backend:
+    image: argus-backend:${ARGUS_VERSION:-latest}
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: argus-backend
+    restart: unless-stopped
+    expose:
+      - "8000"  # Internal only — nginx proxies
+    env_file: .env
+    environment:
+      - ENVIRONMENT=production
+      - GPU_ENABLED=${GPU_ENABLED:-false}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - models_data:/models
+      - ${LOCAL_STORAGE_DIR:-./data/local_storage}:/data/local_storage
+    networks:
+      - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4G
+    stop_grace_period: 30s  # Allow in-flight requests to finish
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ============== CELERY WORKER ==============
+  celery-worker:
+    image: argus-backend:${ARGUS_VERSION:-latest}
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: argus-celery-worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - ENVIRONMENT=production
+      - GPU_ENABLED=${GPU_ENABLED:-false}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - models_data:/models
+      - ${LOCAL_STORAGE_DIR:-./data/local_storage}:/data/local_storage
+    networks:
+      - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4G
+    stop_grace_period: 60s  # Allow in-flight analyses to finish
+    command: >
+      celery -A core.orchestrator.celery_app worker
+      --loglevel=info
+      --pool=prefork
+      --concurrency=${CELERY_CONCURRENCY:-4}
+      --max-tasks-per-child=100
+      --time-limit=360
+      --soft-time-limit=300
+    healthcheck:
+      test: ["CMD", "celery", "-A", "core.orchestrator.celery_app", "inspect", "ping", "-d", "celery@$$HOSTNAME"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 60s
+
+  # ============== CELERY BEAT (scheduled tasks) ==============
+  celery-beat:
+    image: argus-backend:${ARGUS_VERSION:-latest}
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: argus-celery-beat
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - ENVIRONMENT=production
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    stop_grace_period: 30s
+    command: >
+      celery -A core.orchestrator.celery_app beat
+      --loglevel=info
+      --schedule=/tmp/celerybeat-schedule
+
+  # ============== FRONTEND ==============
+  frontend:
+    image: argus-frontend:${ARGUS_VERSION:-latest}
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: argus-frontend
+    restart: unless-stopped
+    expose:
+      - "3000"  # Internal only — nginx proxies
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+    networks:
+      - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ============== MONGODB ==============
+  mongodb:
+    image: mongo:7
+    container_name: argus-mongodb
+    restart: unless-stopped
+    expose:
+      - "27017"  # Internal only
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+      MONGO_INITDB_DATABASE: argus_core
+    networks:
+      - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "mongosh", "-u", "${MONGO_USER}", "-p", "${MONGO_PASSWORD}", "--authenticationDatabase", "admin", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: ["--auth", "--bind_ip_all", "--wiredTiger.cacheSizeGB=1"]
+
+  # ============== REDIS ==============
+  redis:
+    image: redis:7-alpine
+    container_name: argus-redis
+    restart: unless-stopped
+    expose:
+      - "6379"  # Internal only
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD}
+    networks:
+      - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============== MINIO ==============
+  minio:
+    image: minio/minio:latest
+    container_name: argus-minio
+    restart: unless-stopped
+    expose:
+      - "9000"  # S3 API — internal only
+      - "9001"  # Web console — internal only (or proxy via nginx)
+    volumes:
+      - minio_data:/data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    command: server /data --console-address ":9001"
+    networks:
+      - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============== PROMETHEUS ==============
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: argus-prometheus
+    restart: unless-stopped
+    expose:
+      - "9090"  # Internal — proxy via nginx if external access needed
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alertmanager/rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--alertmanager.url=http://alertmanager:9093'
+
+  # ============== ALERTMANAGER ==============
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: argus-alertmanager
+    restart: unless-stopped
+    expose:
+      - "9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+
+  # ============== GRAFANA ==============
+  grafana:
+    image: grafana/grafana:latest
+    container_name: argus-grafana
+    restart: unless-stopped
+    expose:
+      - "3000"  # Internal — nginx proxies to /grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_SERVER_ROOT_URL: https://${ARGUS_DOMAIN:-localhost}/grafana
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - argus-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+    depends_on:
+      - prometheus
+
+networks:
+  argus-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+  mongodb_config:
+  redis_data:
+  minio_data:
+  models_data:
+  prometheus_data:
+  grafana_data:
+  nginx_logs:

@@ -51,7 +51,7 @@ class VideoMAEDetector(BaseDetector):
     weights are found, so the detector is always runnable for smoke tests.
     """
 
-    REQUIRED_MODELS: List[str] = ["videomae_video_detector"]
+    REQUIRED_MODELS: List[str] = ["videomae_base"]
     NUM_FRAMES: int = 16
     FRAME_SIZE: int = 224
 

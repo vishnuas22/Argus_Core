@@ -85,3 +85,10 @@ android-sdk/
 test_samples/
 Video_sample/
 Image_sample/
+
+# Secrets — NEVER commit
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env.local

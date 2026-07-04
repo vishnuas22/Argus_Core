@@ -377,23 +377,39 @@ def ensure_models_for_analyzer(
     model_names: List[str]
 ) -> Dict[str, bool]:
     """
-    Ensure models are available for a specific analyzer.
-    
-    This is the main entry point for analyzers to ensure
-    their required models are available.
-    
+    Check (not download) whether models are available for an analyzer.
+
+    LAZY LOADING (2026-07-02): this function NO LONGER downloads missing
+    models. It only checks if the model file/directory exists on disk.
+    The actual model loading (and download if missing) happens lazily
+    inside ``InferenceEngine.infer()`` → ``ModelManager.get_model()``
+    on the first inference call.
+
+    This keeps analyzer startup fast and avoids blocking on network
+    downloads for models that may not even be needed (e.g., the audio
+    analyzer checks ``wav2vec2_base`` even when only doing vocoder
+    analysis).
+
     Args:
-        analyzer_type: Type of analyzer (audio, video, image)
+        analyzer_type: Type of analyzer (audio, video, image) — for logging
         model_names: List of required model names
-        
+
     Returns:
-        Dict mapping model names to availability
+        Dict mapping model names to availability (file-exists check only)
     """
     initializer = get_model_initializer()
-    
-    logger.info(f"Ensuring models for {analyzer_type} analyzer: {model_names}")
-    
-    return initializer.ensure_models_available(model_names)
+    results: Dict[str, bool] = {}
+    for name in model_names:
+        # Fast file-existence check — no download, no load.
+        status = initializer.check_model_availability(name)
+        results[name] = status.available
+    if not all(results.values()):
+        missing = [n for n, ok in results.items() if not ok]
+        logger.info(
+            f"Models not yet on disk for {analyzer_type} analyzer: {missing}. "
+            f"They will be lazy-loaded on first inference call."
+        )
+    return results
 
 
 def check_model_status(model_name: str) -> ModelStatus:

@@ -152,6 +152,21 @@ celery_app.conf.update(
             "schedule": crontab(minute=30),
             "args": (),
         },
+        # Stuck-task reaper: every 5 minutes, find analyses stuck in
+        # PREPROCESSING/ANALYZING/AGGREGATING past their time limit and
+        # mark them FAILED. Without this, a Celery worker crash leaves
+        # analyses in STARTED forever — users see "analyzing..." forever.
+        "reap-stuck-tasks-every-5min": {
+            "task": "argus_tasks.reap_stuck_tasks",
+            "schedule": crontab(minute="*/5"),
+            "args": (),
+        },
+        # Daily MongoDB backup to MinIO (midnight UTC)
+        "backup-mongodb-daily": {
+            "task": "argus_tasks.backup_mongodb",
+            "schedule": crontab(hour=0, minute=15),
+            "args": (),
+        },
     },
 )
 
@@ -302,6 +317,83 @@ def dead_letter_handler_task(
         "original_task": original_task_name,
         "task_id": task_id,
     }
+
+
+# ===========================================================
+# Stuck-task reaper + MongoDB backup (production reliability)
+# ===========================================================
+
+@celery_app.task(name="argus_tasks.reap_stuck_tasks")
+def reap_stuck_tasks_celery():
+    """
+    Celery task: find analyses stuck in PREPROCESSING/ANALYZING/AGGREGATING
+    past their time limit and mark them FAILED.
+
+    Scheduled every 5 minutes via Celery Beat. Without this, a Celery
+    worker crash leaves analyses in STARTED forever — users see
+    "analyzing..." indefinitely and lose trust.
+
+    See core/stuck_task_reaper.py for the implementation.
+    """
+    try:
+        from core.stuck_task_reaper import reap_stuck_tasks_task
+        return reap_stuck_tasks_task()
+    except Exception as e:
+        logger.error("Stuck task reaper failed: %s", e)
+        return {"status": "failed", "error": str(e)}
+
+
+@celery_app.task(name="argus_tasks.backup_mongodb")
+def backup_mongodb_celery():
+    """
+    Celery task: create a MongoDB backup and upload to MinIO.
+
+    Scheduled daily at 00:15 UTC via Celery Beat. The backup script
+    is at scripts/backup_mongodb.sh — it uses mongodump + aws s3 cp.
+
+    Retention: 30 daily backups kept in MinIO (lifecycle policy).
+    Restore: scripts/restore_mongodb.sh --latest
+    """
+    import subprocess
+    try:
+        script = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "scripts", "backup_mongodb.sh",
+        )
+        # If the script doesn't exist (e.g., running inside container
+        # without the repo), skip gracefully — ops should mount it.
+        if not os.path.exists(script):
+            logger.warning(
+                "backup_mongodb.sh not found at %s — skipping backup. "
+                "Mount the scripts/ directory in the celery-beat container.",
+                script,
+            )
+            return {"status": "skipped", "reason": "script_not_found"}
+
+        result = subprocess.run(
+            ["bash", script],
+            capture_output=True,
+            text=True,
+            timeout=1800,  # 30 min max
+        )
+        if result.returncode != 0:
+            logger.error(
+                "MongoDB backup failed (exit %d): %s",
+                result.returncode, result.stderr[:500],
+            )
+            return {
+                "status": "failed",
+                "exit_code": result.returncode,
+                "stderr": result.stderr[:500],
+            }
+        logger.info("MongoDB backup complete: %s", result.stdout[-200:])
+        return {"status": "completed", "output": result.stdout[-500:]}
+    except subprocess.TimeoutExpired:
+        logger.error("MongoDB backup timed out after 30 min")
+        return {"status": "timeout"}
+    except Exception as e:
+        logger.error("MongoDB backup task failed: %s", e)
+        return {"status": "failed", "error": str(e)}
 
 
 # ============== ASYNC HELPERS ==============
@@ -536,7 +628,11 @@ async def run_analysis_pipeline(
             analysis_id=analysis_id
         )
         
-        # A/B test: record predictions for each modality
+        # A/B test: record predictions for each modality.
+        # Swallowing exceptions here silently would hide continuous-learning
+        # failures — instead, log them at WARNING so ops can see when the
+        # A/B router is misbehaving. We still do not raise, because A/B
+        # telemetry is non-critical and must not break the main pipeline.
         try:
             from continuous_learning.ab_test import get_default_ab_router
             _ab_router = get_default_ab_router()
@@ -548,8 +644,20 @@ async def run_analysis_pipeline(
                         latency_ms=processing_time * 1000,
                         is_candidate=False,
                     )
-        except Exception:
-            pass
+        except ImportError as _e:
+            logger.debug(
+                "continuous_learning.ab_test not available — A/B telemetry "
+                "disabled. Reason: %s", _e,
+            )
+        except Exception as _e:
+            # A/B telemetry must not break the main pipeline, but silent
+            # swallowing hides real bugs. Log at WARNING with the analysis
+            # id so ops can correlate.
+            logger.warning(
+                "A/B test prediction recording failed for analysis %s: "
+                "%s: %s", analysis_id, type(_e).__name__, _e,
+                exc_info=False,
+            )
         
         # Update analysis with results
         await db.update_analysis(analysis_id, final_updates)

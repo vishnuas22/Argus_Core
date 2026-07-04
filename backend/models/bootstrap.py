@@ -8,6 +8,7 @@ Downloads real ONNX models from HuggingFace Hub with:
 - Automatic retry with exponential backoff
 - Progress tracking
 - Graceful degradation on failure
+- ONNX load validation (the real integrity check)
 
 Models are downloaded to config.model_cache_dir on first run
 and cached locally for subsequent runs.
@@ -28,37 +29,36 @@ from utils.logging import get_logger
 logger = get_logger(__name__)
 
 # ============== MODEL MANIFEST ==============
-# Real, publicly available ONNX models from HuggingFace Hub
+# Real, publicly available ONNX models from HuggingFace Hub.
 # Each entry: (hf_repo, hf_filename, local_name, expected_size_mb)
+#
+# IMPORTANT: sizes are MINIMUM acceptable sizes (80% of expected), used
+# only to detect truncated downloads. The actual model files may be
+# smaller due to ONNX graph optimization — do NOT inflate these.
+# Updated 2026-07-03 after real download verification on M1 Max.
 
 MODEL_MANIFEST: Dict[str, Tuple[str, str, str, float]] = {
-    # Deepfake image detection
+    # Deepfake image detection — verified 327.5MB actual download.
     "deepfake_detector": (
         "onnx-community/Deep-Fake-Detector-v2-Model-ONNX",
         "onnx/model.onnx",
         "deepfake_detector_v3.onnx",
-        420.0
+        300.0,  # min acceptable (actual is 327.5MB; was 420 which was wrong)
     ),
-    # CLIP ViT-B/16 feature extractor
+    # CLIP ViT-B/16 vision encoder — ONNX export from openai/clip-vit-base-patch16.
+    # The onnx-community repo stores the vision model under onnx/model.onnx
+    # (not the root model.onnx that 404'd). Verified path.
     "clip_vit_b16": (
         "onnx-community/clip-vit-base-patch16-ONNX",
-        "model.onnx",
+        "onnx/model.onnx",  # was "model.onnx" — caused 404
         "clip_vit_b16.onnx",
-        580.0
+        300.0,  # min acceptable (actual ~346MB for vision encoder)
     ),
 }
 
 
 async def compute_sha256(file_path: Path) -> str:
-    """
-    Compute SHA256 checksum of a file asynchronously.
-    
-    Args:
-        file_path: Path to file
-        
-    Returns:
-        Hexadecimal SHA256 checksum
-    """
+    """Compute SHA256 checksum of a file asynchronously."""
     sha256 = hashlib.sha256()
     loop = asyncio.get_event_loop()
     
@@ -85,7 +85,7 @@ async def download_from_huggingface(
         repo_id: HuggingFace repository ID
         filename: File path within the repository
         target_path: Local path to save the file
-        expected_size_mb: Expected file size for validation
+        expected_size_mb: Minimum acceptable file size (MB)
         max_retries: Maximum retry attempts
         
     Returns:
@@ -125,15 +125,21 @@ async def download_from_huggingface(
             if downloaded_path and os.path.exists(downloaded_path):
                 actual_size_mb = os.path.getsize(downloaded_path) / (1024 * 1024)
                 
-                # Validate file is at least 80% of expected size
+                # Validate the download is not truncated. The expected_size_mb
+                # in the manifest is the MINIMUM acceptable size (not the exact
+                # expected size) — ONNX models vary due to graph optimization,
+                # quantization, and opset version. The real validation is the
+                # ONNX load check below.
                 min_acceptable_size = expected_size_mb * 0.8
                 if actual_size_mb < min_acceptable_size:
                     logger.warning(
                         f"Downloaded file too small: {actual_size_mb:.1f}MB "
-                        f"(expected ~{expected_size_mb:.0f}MB, minimum {min_acceptable_size:.0f}MB)"
+                        f"(minimum acceptable {min_acceptable_size:.0f}MB) — "
+                        f"likely truncated download, retrying"
                     )
                     continue
 
+                # Move to the final target path if needed
                 if downloaded_path != str(target_path):
                     import shutil
                     shutil.move(downloaded_path, str(target_path))
@@ -142,6 +148,28 @@ async def download_from_huggingface(
                     f"Successfully downloaded {target_path.name}: "
                     f"{actual_size_mb:.1f}MB"
                 )
+
+                # Validate the ONNX model actually loads — this is the real
+                # integrity check (size alone is unreliable for ONNX files
+                # which vary due to graph optimization / quantization).
+                try:
+                    import onnx
+                    onnx_model = onnx.load(str(target_path))
+                    logger.info(
+                        f"  ONNX validation: ✓ valid model with "
+                        f"{len(onnx_model.graph.node)} nodes"
+                    )
+                except ImportError:
+                    logger.debug("  onnx package not installed — skipping load validation")
+                except Exception as onnx_err:
+                    logger.warning(
+                        f"  ONNX validation FAILED: {onnx_err} — "
+                        f"file may be corrupt; will retry"
+                    )
+                    # Delete the corrupt file so retry re-downloads
+                    target_path.unlink(missing_ok=True)
+                    continue
+
                 return True
 
         except Exception as exc:
@@ -252,3 +280,51 @@ async def ensure_primary_models() -> bool:
         return results.get("deepfake_detector", False) or primary_ok
     
     return primary_ok
+
+
+# ============== CLI ENTRY POINT ==============
+if __name__ == "__main__":
+    import sys
+    import logging
+
+    # Configure logging for CLI usage — structured JSON logging is great for
+    # production but unreadable in a terminal. Switch to human-readable format.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    # Parse simple CLI args
+    force = "--force" in sys.argv
+    model_keys = [a for a in sys.argv[1:] if not a.startswith("-")]
+
+    async def _cli():
+        print("=" * 60)
+        print("Argus Core — Model Bootstrapper")
+        print("=" * 60)
+        print(f"Model cache dir: {config.model_cache_dir}")
+        print(f"Models to download: {model_keys or 'all'}")
+        print(f"Force re-download: {force}")
+        print()
+
+        results = await bootstrap_models(
+            models_to_download=model_keys if model_keys else None,
+            skip_existing=not force,
+        )
+
+        print()
+        print("=" * 60)
+        print("Bootstrap Results:")
+        for name, ok in results.items():
+            status = "✓ OK" if ok else "✗ FAILED"
+            print(f"  {status}  {name}")
+        downloaded = sum(1 for v in results.values() if v)
+        total = len(results)
+        print(f"\n{downloaded}/{total} models ready")
+        print("=" * 60)
+
+        if downloaded < total:
+            sys.exit(1)
+
+    asyncio.run(_cli())

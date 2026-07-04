@@ -1,0 +1,211 @@
+# ============================================================
+# Argus Core — Prometheus Alert Rules
+# ============================================================
+# These rules are evaluated by Prometheus every 15s.
+# Fired alerts are sent to Alertmanager.
+# ============================================================
+
+groups:
+  # ============== Service Health ==============
+  - name: service_health
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: '{{ $labels.job }}'
+        annotations:
+          summary: 'Service {{ $labels.job }} is down'
+          description: '{{ $labels.instance }} has been down for more than 1 minute.'
+
+      - alert: HighCPUUsage
+        expr: rate(container_cpu_usage_seconds_total[5m]) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          service: '{{ $labels.name }}'
+        annotations:
+          summary: 'High CPU on {{ $labels.name }}'
+          description: 'Container {{ $labels.name }} CPU > 80% for 10 min.'
+
+      - alert: HighMemoryUsage
+        expr: container_memory_usage_bytes / container_spec_memory_limit_bytes > 0.9
+        for: 5m
+        labels:
+          severity: critical
+          service: '{{ $labels.name }}'
+        annotations:
+          summary: 'High memory on {{ $labels.name }}'
+          description: 'Container {{ $labels.name }} memory > 90% for 5 min — may OOM.'
+
+  # ============== Backend ==============
+  - name: backend
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          rate(http_requests_total{status=~"5.."}[5m])
+          / rate(http_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: backend
+        annotations:
+          summary: 'Backend error rate > 5%'
+          description: '5xx errors are {{ $value | humanizePercentage }} of requests for 5 min.'
+
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95,
+            rate(http_request_duration_seconds_bucket[5m])) > 30
+        for: 5m
+        labels:
+          severity: warning
+          service: backend
+        annotations:
+          summary: 'Backend p95 latency > 30s'
+          description: 'API p95 latency is {{ $value }}s — users will see timeouts.'
+
+      - alert: BackendUnhealthy
+        expr: backend_health_status{component="database"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: backend
+        annotations:
+          summary: 'Backend cannot reach MongoDB'
+          description: 'Database health check failing for 1 min.'
+
+  # ============== Celery ==============
+  - name: celery
+    rules:
+      - alert: CeleryWorkerDown
+        expr: celery_workers_online < 1
+        for: 1m
+        labels:
+          severity: critical
+          service: celery
+        annotations:
+          summary: 'No Celery workers online'
+          description: 'No workers available — analyses are not being processed.'
+
+      - alert: CeleryQueueBacklog
+        expr: celery_queue_length > 50
+        for: 10m
+        labels:
+          severity: warning
+          service: celery
+        annotations:
+          summary: 'Celery queue backlog > 50'
+          description: '{{ $value }} tasks queued for 10 min — throughput insufficient.'
+
+      - alert: CeleryTaskFailures
+        expr: |
+          rate(celery_task_failed_total[10m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: celery
+        annotations:
+          summary: 'Celery task failure rate high'
+          description: '{{ $value }} task failures/sec for 5 min.'
+
+  # ============== Database ==============
+  - name: database
+    rules:
+      - alert: MongoDBHighConnections
+        expr: mongodb_connections > 80
+        for: 5m
+        labels:
+          severity: warning
+          service: mongodb
+        annotations:
+          summary: 'MongoDB connections > 80'
+          description: 'Connection pool near limit (max 100).'
+
+      - alert: MongoDBDiskFull
+        expr: |
+          mongodb_db_data_size_bytes
+          / mongodb_db_storage_total_bytes > 0.9
+        for: 10m
+        labels:
+          severity: critical
+          service: mongodb
+        annotations:
+          summary: 'MongoDB disk > 90% full'
+          description: 'Database will run out of space soon.'
+
+  # ============== Storage ==============
+  - name: storage
+    rules:
+      - alert: MinIOUnhealthy
+        expr: minio_health_status == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: minio
+        annotations:
+          summary: 'MinIO unhealthy'
+          description: 'Storage backend unreachable — uploads will fail.'
+
+      - alert: StorageInFallbackMode
+        expr: argus_storage_mode == 1
+        for: 5m
+        labels:
+          severity: warning
+          service: storage
+        annotations:
+          summary: 'Storage in local fallback mode'
+          description: 'MinIO failed; using local filesystem. Restart MinIO to recover.'
+
+  # ============== Models ==============
+  - name: models
+    rules:
+      - alert: ModelsNotLoaded
+        expr: argus_models_loaded < 3
+        for: 10m
+        labels:
+          severity: warning
+          service: models
+        annotations:
+          summary: 'Fewer than 3 models loaded'
+          description: 'Detection accuracy will be degraded.'
+
+      - alert: ModelInferenceFailures
+        expr: |
+          rate(argus_model_inference_total{success="false"}[10m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: models
+        annotations:
+          summary: 'Model inference failure rate high'
+          description: '{{ $value }} inference failures/sec for 5 min.'
+
+  # ============== Drift Detection ==============
+  - name: drift
+    rules:
+      - alert: DistributionDriftDetected
+        expr: argus_drift_psi > 0.25
+        for: 1h
+        labels:
+          severity: warning
+          service: drift
+        annotations:
+          summary: 'Major distribution drift detected on {{ $labels.modality }}'
+          description: 'PSI > 0.25 — a new generator may have appeared. Retrain LoRA adapters.'
+
+  # ============== Disk ==============
+  - name: disk
+    rules:
+      - alert: HostDiskFull
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/"}
+          / node_filesystem_size_bytes{mountpoint="/"}) < 0.1
+        for: 10m
+        labels:
+          severity: critical
+          service: host
+        annotations:
+          summary: 'Host disk > 90% full'
+          description: 'Disk will fill up soon — clean up old data.'
