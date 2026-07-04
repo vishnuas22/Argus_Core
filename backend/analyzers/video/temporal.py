@@ -218,7 +218,7 @@ class TemporalAnalyzer(SubAnalyzer):
             List of model registry keys
         """
         return [
-            "videomae_temporal",   # VideoMAE temporal transformer
+            "videomae_base",   # VideoMAE temporal transformer
             "retinaface"           # For landmark tracking
         ]
     

@@ -745,19 +745,55 @@ class InferenceEngine:
 
 
 # Singleton instance
+# NOTE: Previously this was a bare module-level `_engine` variable mutated
+# by `get_inference_engine()` without any synchronization. Under Celery's
+# prefork model that is fine (one process per worker), but under FastAPI
+# the same process hosts multiple asyncio event loops across threads, and
+# two concurrent callers could both observe `_engine is None`, both
+# construct an InferenceEngine (which spins up a ThreadPoolExecutor and
+# loads model metadata), and the loser would overwrite the winner —
+# leaking the first executor's threads. The fix is a process-wide lock
+# around the lazy init. The lock is held only for the constructor call,
+# never for inference itself, so it does not serialize requests.
+import threading as _threading
+
 _engine: Optional[InferenceEngine] = None
+_engine_lock = _threading.Lock()
 
 
 def get_inference_engine() -> InferenceEngine:
     """
     Get singleton inference engine instance.
-    
-    Thread-safe lazy initialization.
+
+    Thread-safe lazy initialization via a module-level lock.
+    Safe to call from any thread / asyncio loop within the process.
     """
     global _engine
     if _engine is None:
-        _engine = InferenceEngine()
+        with _engine_lock:
+            # Double-checked locking: re-test inside the lock so we don't
+            # construct a second engine if another thread won the race.
+            if _engine is None:
+                _engine = InferenceEngine()
     return _engine
+
+
+def reset_inference_engine() -> None:
+    """
+    Reset the singleton inference engine (test-only).
+
+    Allows unit tests to swap in a mock engine without polluting other
+    tests. Production code should never call this.
+    """
+    global _engine
+    with _engine_lock:
+        if _engine is not None:
+            # Best-effort cleanup; ignore errors during teardown.
+            try:
+                _engine._executor.shutdown(wait=False)
+            except Exception:
+                pass
+        _engine = None
 
 
 async def initialize_inference_engine(

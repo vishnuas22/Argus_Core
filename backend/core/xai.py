@@ -375,24 +375,53 @@ class XAIGenerator:
             Heatmap array (H, W) in [0, 1]
         """
         import onnxruntime as ort
-        
+
         h, w = image.shape[:2]
         heatmap = np.zeros((h, w), dtype=np.float32)
-        
-        # Load ONNX session (cached globally)
+
+        # Resolve the primary image-detector ONNX path via the registry
+        # instead of hardcoding `/models/deepfake_detector_v3.onnx`. The
+        # previous code fell back to `deepfake_vit_v2.onnx` which does not
+        # exist in the registry at all, so the fallback never worked.
+        #
+        # Resolution order:
+        #   1. Reuse the cached `_primary_onnx_session` from the image
+        #      analyzer (zero-cost, matches the model that actually
+        #      produced the prediction we are explaining).
+        #   2. Look up `deepfake_detector_v3` in the registry and use its
+        #      configured path (which respects MODEL_CACHE_DIR overrides).
+        #   3. Fall back to the synthetic-image heatmap (deterministic,
+        #      gradient-free) — never silently `return None`.
         try:
-            model_path = "/models/deepfake_detector_v3.onnx"
-            if not os.path.exists(model_path):
-                model_path = "/models/deepfake_vit_v2.onnx"
-            if not os.path.exists(model_path):
-                return self._generate_synthetic_image_heatmap(image)
-            
             # Reuse cached session if available
             from analyzers.image import _primary_onnx_session
             if _primary_onnx_session is not None:
                 sess = _primary_onnx_session
             else:
-                sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+                # Look up the model path from the registry so we honor
+                # config.model_cache_dir overrides and sha256 verification.
+                model_path: Optional[str] = None
+                try:
+                    from models.registry import get_model_registry
+                    registry = get_model_registry()
+                    md = registry.get_model_metadata("deepfake_detector_v3")
+                    if md and md.path and os.path.exists(md.path):
+                        model_path = md.path
+                except Exception as _re:
+                    logger.debug(
+                        "Registry lookup for deepfake_detector_v3 failed: %s", _re
+                    )
+
+                if not model_path:
+                    logger.info(
+                        "Occlusion heatmap: no live ONNX session and no "
+                        "registry model — falling back to synthetic heatmap."
+                    )
+                    return self._generate_synthetic_image_heatmap(image)
+
+                sess = ort.InferenceSession(
+                    model_path, providers=["CPUExecutionProvider"]
+                )
             
             input_name = sess.get_inputs()[0].name
             

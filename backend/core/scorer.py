@@ -639,40 +639,84 @@ class TrustScorer:
     ) -> PlattParams:
         """
         Fit Platt scaling parameters from calibration data.
-        
-        Uses logistic regression to fit A and B parameters.
-        
+
+        Delegates to :meth:`PlattParams.fit`, which performs maximum-likelihood
+        fitting via Newton-Raphson in **logit space** — the same parameter
+        space used by :meth:`PlattParams.transform`. This keeps the fit /
+        transform convention consistent.
+
+        Labels convention:
+          * ``1`` = authentic  (the positive class for Platt's P(y=1|s))
+          * ``0`` = fake
+
+        Previous implementation fit a sklearn ``LogisticRegression`` on the
+        **raw score** ``s`` directly, then assigned ``a = -w``, ``b = -b_lr``
+        to ``PlattParams``. That had two bugs:
+          1. **Wrong input space**: sklearn operated on ``s`` while
+             ``PlattParams.transform`` operates on ``logit(s)``.
+          2. **Wrong sign**: ``-w`` and ``-b_lr`` are the coefficients of
+             ``sigmoid(-(w*s + b_lr))`` (i.e. the *fake* probability), not
+             the authentic probability.
+
+        The result was silently incorrect calibration. The fix delegates to
+        the existing, correct ``PlattParams.fit`` (which uses Newton-Raphson
+        on logits) and falls back to it when sklearn is unavailable.
+
         Args:
-            scores: Raw model scores (N,)
-            labels: True labels (0=fake, 1=authentic)
-            content_type: Content type to update
-            
+            scores: Raw model scores in [0,1], shape [N]. Higher = more
+                authentic.
+            labels: Binary labels (0=fake, 1=authentic), shape [N].
+            content_type: Content type whose Platt params to update.
+
         Returns:
-            Fitted PlattParams
+            Fitted ``PlattParams`` (also stored on ``self.platt_params``).
         """
+        if len(scores) != len(labels):
+            raise ValueError(
+                f"scores and labels must have same length; "
+                f"got {len(scores)} vs {len(labels)}"
+            )
+        if len(scores) < 16:
+            logger.warning(
+                "Platt fit on %d samples is unreliable (need >=16 for "
+                "stable calibration). Keeping existing params for %s.",
+                len(scores), content_type,
+            )
+            return self.platt_params.get(content_type, PlattParams())
+
+        # Clip scores to (eps, 1-eps) to avoid infinite logits; PlattParams.fit
+        # also clips but we do it here so the validation log is accurate.
+        scores_arr = np.clip(np.asarray(scores, dtype=np.float64), 1e-7, 1 - 1e-7)
+        labels_arr = np.asarray(labels, dtype=np.float64)
+
+        params = PlattParams.fit(scores_arr, labels_arr)
+        self.platt_params[content_type] = params
+
+        logger.info(
+            "Fitted Platt params for %s on %d samples: a=%.4f, b=%.4f "
+            "(logit-space Newton-Raphson)",
+            content_type, len(scores), params.a, params.b,
+        )
+
+        # If sklearn is available, cross-check against it as a sanity
+        # diagnostic. We do NOT use sklearn's coefficients directly because
+        # they live in raw-score space; the comparison only checks that the
+        # sign of the slope agrees.
         try:
             from sklearn.linear_model import LogisticRegression
-            
-            # Fit logistic regression
-            lr = LogisticRegression(solver='lbfgs')
-            lr.fit(scores.reshape(-1, 1), labels)
-            
-            # Extract parameters
-            # P(y=1|f) = 1 / (1 + exp(-(w*f + b)))
-            # Platt form: 1 / (1 + exp(A*f + B))
-            # So A = -w, B = -b
-            a = -float(lr.coef_[0][0])
-            b = -float(lr.intercept_[0])
-            
-            params = PlattParams(a=a, b=b)
-            self.platt_params[content_type] = params
-            
-            logger.info(f"Fitted Platt params for {content_type}: A={a:.3f}, B={b:.3f}")
-            return params
-            
+            lr = LogisticRegression(solver="lbfgs")
+            lr.fit(scores_arr.reshape(-1, 1), labels_arr)
+            sklearn_slope = float(lr.coef_[0][0])
+            if np.sign(sklearn_slope) != np.sign(params.a) and abs(params.a) > 0.05:
+                logger.warning(
+                    "Platt fit sign mismatch for %s: sklearn slope=%.4f, "
+                    "PlattParams.a=%.4f. Investigate calibration data "
+                    "distribution.", content_type, sklearn_slope, params.a,
+                )
         except ImportError:
-            logger.warning("sklearn not available, using default Platt params")
-            return self.platt_params.get(content_type, PlattParams())
+            pass  # sklearn unavailable — skip the cross-check
+
+        return params
 
     def save_platt_params(self, path: str) -> None:
         """Save fitted Platt parameters to disk as JSON."""

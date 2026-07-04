@@ -182,16 +182,123 @@ def event_loop() -> Generator:
 
 @pytest.fixture(scope="session")
 def test_db() -> Generator:
-    """Session-scoped test database."""
+    """Session-scoped test database.
+
+    If MongoDB is not reachable, the fixture yields ``None`` and sets a
+    session-level marker so that DB-dependent tests are skipped rather
+    than hanging for 30 seconds on the connection timeout. This keeps
+    the CPU-only test suite fast and lets pure-Python tests run in
+    environments without MongoDB (e.g., CI without service containers).
+    """
     db = TestDatabase()
     loop = asyncio.new_event_loop()
+    # Probe MongoDB connectivity with a short timeout. If the server is
+    # unreachable, skip DB-dependent tests instead of hanging.
     try:
-        loop.run_until_complete(db.connect())
+        loop.run_until_complete(asyncio.wait_for(db.connect(), timeout=5.0))
+    except asyncio.TimeoutError:
+        logger.warning(
+            "MongoDB not reachable at %s — DB-dependent tests will be "
+            "skipped. Set MONGO_URL or run a local mongod to enable them.",
+            config.mongo_url,
+        )
+        pytest._argus_mongodb_unavailable = True  # type: ignore[attr-defined]
+        yield None  # type: ignore[misc]
+        loop.close()
+        return
+    except Exception as e:
+        logger.warning(
+            "MongoDB connection failed (%s: %s) — DB-dependent tests "
+            "will be skipped.", type(e).__name__, e,
+        )
+        pytest._argus_mongodb_unavailable = True  # type: ignore[attr-defined]
+        yield None  # type: ignore[misc]
+        loop.close()
+        return
+    try:
         yield db
     finally:
         loop.run_until_complete(db.cleanup())
         loop.run_until_complete(db.disconnect())
         loop.close()
+
+
+def _mongodb_available() -> bool:
+    """True iff the test_db fixture successfully connected to MongoDB."""
+    return not getattr(pytest, "_argus_mongodb_unavailable", False)
+
+
+# Marker that DB-dependent tests can use to skip when MongoDB is offline.
+
+def _probe_mongodb_available() -> bool:
+    """Probe MongoDB connectivity with a short timeout.
+
+    Called once at conftest import time so that
+    ``pytest_collection_modifyitems`` can skip DB-dependent tests
+    before they attempt their own (slow) connection. We use a 1.5s
+    socket-level probe rather than a full mongo connect because the
+    latter can take 30s to time out.
+    """
+    import socket
+    host, port = "localhost", 27017
+    # Parse MONGO_URL if set: mongodb://host:port
+    url = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+    if "://" in url:
+        host_part = url.split("://", 1)[1].split("/", 1)[0]
+        if ":" in host_part:
+            host, port_str = host_part.rsplit(":", 1)
+            try:
+                port = int(port_str)
+            except ValueError:
+                pass
+        else:
+            host = host_part
+    try:
+        with socket.create_connection((host, port), timeout=1.5):
+            return True
+    except (OSError, socket.timeout):
+        return False
+
+
+# Set the flag at import time so collection-time hooks can read it.
+_MONGODB_AVAILABLE = _probe_mongodb_available()
+if not _MONGODB_AVAILABLE:
+    logger.warning(
+        "MongoDB not reachable at %s:%s — DB-dependent tests will be "
+        "skipped. Set MONGO_URL or run a local mongod to enable them.",
+        "localhost", 27017,
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Auto-skip DB-dependent tests when MongoDB is unavailable.
+
+    A test is considered DB-dependent if ANY of these is true:
+      - It requests the ``test_db``, ``app``, ``client``, or
+        ``async_client`` fixtures (these all transitively require MongoDB).
+      - It lives in a test module whose path contains
+        ``test_integration.py`` (these tests construct their own
+        ``DatabaseClient`` directly and do not use the conftest fixture).
+      - It is already marked with ``@pytest.mark.integration``.
+    """
+    if _MONGODB_AVAILABLE:
+        return
+    skip_db = pytest.mark.skip(
+        reason="MongoDB unavailable — set MONGO_URL or run mongod to enable",
+    )
+    db_fixtures = {"test_db", "app", "client", "async_client"}
+    for item in items:
+        # Detect by fixture dependency
+        if any(fname in item.fixturenames for fname in db_fixtures):
+            item.add_marker(skip_db)
+            continue
+        # Detect by file path
+        if "test_integration.py" in str(item.fspath):
+            item.add_marker(skip_db)
+            continue
+        # Detect by existing integration marker
+        if item.get_closest_marker("integration") is not None:
+            item.add_marker(skip_db)
 
 
 @pytest.fixture(scope="session")

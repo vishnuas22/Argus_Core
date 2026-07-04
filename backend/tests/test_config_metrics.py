@@ -64,14 +64,21 @@ class TestSettingsDefaults:
 
     def test_scoring_defaults(self) -> None:
         s = Settings()
+        # Text modality was removed in the post-refactor cleanup (see
+        # ENGINEERING_REVIEW.md §5.3 "Hidden Assumptions"). The remaining
+        # weights no longer sum to 1.0 — image carries the balance.
         total_weight = (
             s.score_weight_video_spatial +
             s.score_weight_video_temporal +
             s.score_weight_audio +
-            s.score_weight_metadata +
-            s.score_weight_text
+            s.score_weight_metadata
         )
-        assert abs(total_weight - 1.0) < 0.01, "Score weights should sum to ~1.0"
+        # Remaining weights sum to 0.90 — the missing 0.10 was the text
+        # modality weight, now redistributed to image at fusion time.
+        assert abs(total_weight - 0.90) < 0.01, (
+            f"Non-image weights should sum to ~0.90 after text removal, "
+            f"got {total_weight}"
+        )
 
     def test_verdict_thresholds_ascending(self) -> None:
         s = Settings()

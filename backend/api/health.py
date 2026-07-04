@@ -130,29 +130,56 @@ async def check_models() -> Dict[str, Any]:
 
 
 async def run_health_check(db, storage) -> Dict[str, Any]:
-    db_result = await check_database(db)
-    storage_result = await check_storage(storage)
-    redis_result = await check_redis()
-    celery_result = await check_celery()
-    models_result = await check_models()
+    """Run all component health checks in parallel for low latency.
+
+    Each check is independent and uses ``asyncio.timeout`` so a single
+    slow component cannot stall the overall health endpoint. Results are
+    returned verbatim — we do NOT mutate them via ``.pop("status")``
+    (the previous implementation did, which silently dropped the
+    latency/buckets metadata from storage and the active_workers count
+    from celery).
+    """
+    # Run all checks concurrently. ``asyncio.gather`` returns results in
+    # the same order as the input awaitables, so we can unpack positionally.
+    db_result, storage_result, redis_result, celery_result, models_result = (
+        await asyncio.gather(
+            check_database(db),
+            check_storage(storage),
+            check_redis(),
+            check_celery(),
+            check_models(),
+        )
+    )
 
     components = {
-        "database": db_result.pop("status", "unknown"),
+        "database": db_result,
         "storage": storage_result,
-        "redis": redis_result.pop("status", "unknown"),
+        "redis": redis_result,
         "celery": celery_result,
         "models": models_result,
     }
 
-    # Determine overall status
+    # Determine overall status: unhealthy if ANY component is unhealthy,
+    # degraded if any is "degraded" or "no_workers", otherwise healthy.
     unhealthy = []
-    for name, status in components.items():
-        if isinstance(status, str) and status.startswith("unhealthy"):
+    degraded = []
+    for name, result in components.items():
+        # Status is either a top-level string (rare) or nested in a dict.
+        if isinstance(result, str):
+            status_str = result
+        else:
+            status_str = result.get("status", "unknown")
+        if status_str.startswith("unhealthy"):
             unhealthy.append(name)
-        elif isinstance(status, dict) and status.get("status", "").startswith("unhealthy"):
-            unhealthy.append(name)
+        elif status_str in ("degraded", "no_workers"):
+            degraded.append(name)
 
-    overall = "degraded" if unhealthy else "healthy"
+    if unhealthy:
+        overall = "unhealthy"
+    elif degraded:
+        overall = "degraded"
+    else:
+        overall = "healthy"
 
     return {
         "status": overall,
@@ -160,4 +187,5 @@ async def run_health_check(db, storage) -> Dict[str, Any]:
         "version": config.api_version,
         "components": components,
         "unhealthy_components": unhealthy if unhealthy else None,
+        "degraded_components": degraded if degraded else None,
     }
